@@ -1,0 +1,36 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+      <title>danielm's blog</title>
+      <link>https://danielm.pw</link>
+      <description>programming, philosophy, blog, stoicism</description>
+      <atom:link href="https://danielm.pw/index.xml" rel="self" type="application/rss+xml" />
+      <image>
+        <title>daniel's blog</title>
+        <link>https://danielm.pw</link>
+      </image>
+      <language>en-us</language>
+      <copyright>Creative Commons BY-NC-SA 4.0</copyright>
+      <% for f in `ls -t ./posts`; do
+          file="./posts/"$f
+          post_date=$(date -u -r "$file" "+%a, %d %b %Y %H:%M:00 %z")
+          html=$(pandoc -t html "$file" | sed -e "s/&/\&amp;/g" -e "s/</\&lt;/g" -e "s/>/\&gt;/g")
+          id="${file##*/}"
+          id="${id%.*}"
+          post_title=$(echo "$id" | sed -E -e "s/\..+$//g"  -e "s/_(.)/ \u\1/g" -e "s/^(.)/\u\1/g")
+          post_link="https://danielm.pw/posts/$id/"
+
+          echo "<item>"
+
+          echo "<title>$post_title</title>"
+          echo "<description>$html</description>"
+          echo "<link>$post_link</link>"
+          echo "<pubDate>$post_date</pubDate>"
+          echo "<guid>$post_link</guid>"
+
+          echo "</item>"
+
+          done
+      %>
+
+    </channel>
+</rss>

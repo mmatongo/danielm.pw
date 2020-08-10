@@ -1,0 +1,962 @@
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+      <title>nerdypepper's μblog</title>
+      <link>https://peppe.rs</link>
+      <description>programming, design, software</description>
+      <atom:link href="https://peppe.rs/index.xml" rel="self" type="application/rss+xml" />
+      <image>
+        <title>nerdypepper's μblog</title>
+        <url>https://u.peppe.rs/n.png</url>
+        <link>https://peppe.rs</link>
+      </image>
+      <language>en-us</language>
+      <copyright>Creative Commons BY-NC-SA 4.0</copyright>
+      <item>
+<title>uWPA uwoes</title>
+<description>&lt;p&gt;I finally got around to installing Void GNU/Linux on my main computer. Rolling release, non-systemd, need I say more?&lt;/p&gt;
+&lt;p&gt;As with all GNU/Linux distributions, wireless networks had me in a fix. If you can see this post, it means I’ve managed to get online. It turns out, &lt;code&gt;wpa_supplicant&lt;/code&gt; was detecting the wrong interface by default (does it ever select the right one?). Let us fix that:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;$ sudo rm -r /var/service/wpa_supplicant
+$ sudo killall dhcpcd&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;What is the right interface though?&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;$ iw dev
+   ...
+   Interface wlp2s0
+   ...&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Aha! Let us run &lt;code&gt;wpa_supplicant&lt;/code&gt; on that interface, as a background process:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;$ sudo wpa_supplicant -B -i wlp2s0 -c /etc/wpa_supplicant/wpa_supplicant.conf
+$ sudo dhcpcd -B wlp2s0
+$ ping google.com
+PING ...&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Yay! Make those changes perpetual by enabling the service:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;------------------------------------------------------
+# Add these to /etc/wpa_supplicant/wpa_supplicant.conf
+OPTS=&amp;quot;-B&amp;quot;
+WPA_INTERFACE=&amp;quot;wlp2s0&amp;quot;
+------------------------------------------------------
+$ sudo ln -s /etc/sv/wpa_supplicant /var/service/
+$ sudo ln -s /etc/sv/dhcpcd /var/service/
+$ sudo sv restart wpa_supplicant
+$ sudo sv restart dhcpcd&lt;/code&gt;&lt;/pre&gt;</description>
+<link>https://peppe.rs/posts/WPA_woes/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/WPA_woes/</guid>
+</item>
+<item>
+<title>uauto-currying urust ufunctions</title>
+<description>&lt;p&gt;This post contains a gentle introduction to procedural macros in Rust and a guide to writing a procedural macro to curry Rust functions. The source code for the entire library can be found &lt;a href="https://github.com/nerdypepper/cutlass"&gt;here&lt;/a&gt;. It is also available on &lt;a href="https://crates.io/crates/cutlass"&gt;crates.io&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;The following links might prove to be useful before getting started:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://doc.rust-lang.org/reference/procedural-macros.html"&gt;Procedural Macros&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://en.wikipedia.org/wiki/Currying"&gt;Currying&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Or you can pretend you read them, because I have included a primer here :)&lt;/p&gt;
+&lt;h3 id="contents"&gt;Contents&lt;/h3&gt;
+&lt;ol type="1"&gt;
+&lt;li&gt;&lt;a href="#currying"&gt;Currying&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#procedural-macros"&gt;Procedural Macros&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#definitions"&gt;Definitions&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#refinement"&gt;Refinement&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#the-in-betweens"&gt;The In-betweens&lt;/a&gt;&lt;br /&gt;
+     5.1 &lt;a href="#dependencies"&gt;Dependencies&lt;/a&gt;&lt;br /&gt;
+     5.2 &lt;a href="#the-attribute-macro"&gt;The attribute macro&lt;/a&gt;&lt;br /&gt;
+     5.3 &lt;a href="#function-body"&gt;Function Body&lt;/a&gt;&lt;br /&gt;
+     5.4 &lt;a href="#function-signature"&gt;Function Signature&lt;/a&gt;&lt;br /&gt;
+     5.5 &lt;a href="#getting-it-together"&gt;Getting it together&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#debugging-and-testing"&gt;Debugging and Testing&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#notes"&gt;Notes&lt;/a&gt;&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;a href="#conclusion"&gt;Conclusion&lt;/a&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="currying"&gt;Currying&lt;/h3&gt;
+&lt;p&gt;Currying is the process of transformation of a function call like &lt;code&gt;f(a, b, c)&lt;/code&gt; to &lt;code&gt;f(a)(b)(c)&lt;/code&gt;. A curried function returns a concrete value only when it receives all its arguments! If it does recieve an insufficient amount of arguments, say 1 of 3, it returns a &lt;em&gt;curried function&lt;/em&gt;, that returns after receiving 2 arguments.&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;curry(f(a, b, c)) = h(a)(b)(c)
+
+h(x) = g   &amp;lt;- curried function that takes upto 2 args (g)
+g(y) = k   &amp;lt;- curried function that takes upto 1 arg (k)
+k(z) = v   &amp;lt;- a value (v)
+
+Keen readers will conclude the following,
+h(x)(y)(z) = g(y)(z) = k(z) = v&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Mathematically, if &lt;code&gt;f&lt;/code&gt; is a function that takes two arguments &lt;code&gt;x&lt;/code&gt; and &lt;code&gt;y&lt;/code&gt;, such that &lt;code&gt;x ϵ X&lt;/code&gt;, and &lt;code&gt;y ϵ Y&lt;/code&gt; , we write it as:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;f: (X × Y) -&amp;gt; Z&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;where &lt;code&gt;×&lt;/code&gt; denotes the Cartesian product of set &lt;code&gt;X&lt;/code&gt; and &lt;code&gt;Y&lt;/code&gt;, and curried &lt;code&gt;f&lt;/code&gt; (denoted by &lt;code&gt;h&lt;/code&gt; here) is written as:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;h: X -&amp;gt; (Y -&amp;gt; Z)&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="procedural-macros"&gt;Procedural Macros&lt;/h3&gt;
+&lt;p&gt;These are functions that take code as input and spit out modified code as output. Powerful stuff. Rust has three kinds of proc-macros:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Function like macros&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;Derive macros: &lt;code&gt;#[derive(...)]&lt;/code&gt;, used to automatically implement traits for structs/enums&lt;br /&gt;
+&lt;/li&gt;
+&lt;li&gt;and Attribute macros: &lt;code&gt;#[test]&lt;/code&gt;, usually slapped onto functions&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;We will be using Attribute macros to convert a Rust function into a curried Rust function, which we should be able to call via: &lt;code&gt;function(arg1)(arg2)&lt;/code&gt;.&lt;/p&gt;
+&lt;h3 id="definitions"&gt;Definitions&lt;/h3&gt;
+&lt;p&gt;Being respectable programmers, we define the input to and the output from our proc-macro. Here’s a good non-trivial function to start out with:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb4"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb4-1"&gt;&lt;a href="#cb4-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; y&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; z&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb4-2"&gt;&lt;a href="#cb4-2" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb4-3"&gt;&lt;a href="#cb4-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Hmm, what would our output look like? What should our proc-macro generate ideally? Well, if we understood currying correctly, we should accept an argument and return a function that accepts an argument and returns … you get the point. Something like this should do:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb5"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb5-1"&gt;&lt;a href="#cb5-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add_curried1(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;?&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-2"&gt;&lt;a href="#cb5-2" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;fn&lt;/span&gt; add_curried2 (y&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;?&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-3"&gt;&lt;a href="#cb5-3" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;fn&lt;/span&gt; add_curried3 (z&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-4"&gt;&lt;a href="#cb5-4" aria-hidden="true"&gt;&lt;/a&gt;      &lt;span class="kw"&gt;return&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-5"&gt;&lt;a href="#cb5-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-6"&gt;&lt;a href="#cb5-6" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb5-7"&gt;&lt;a href="#cb5-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;A couple of things to note:&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Return types&lt;/strong&gt;&lt;br /&gt;
+We have placed &lt;code&gt;?&lt;/code&gt;s in place of return types. Let’s try to fix that. &lt;code&gt;add_curried3&lt;/code&gt; returns the ‘value’, so &lt;code&gt;u32&lt;/code&gt; is accurate. &lt;code&gt;add_curried2&lt;/code&gt; returns &lt;code&gt;add_curried3&lt;/code&gt;. What is the type of &lt;code&gt;add_curried3&lt;/code&gt;? It is a function that takes in a &lt;code&gt;u32&lt;/code&gt; and returns a &lt;code&gt;u32&lt;/code&gt;. So a &lt;code&gt;fn(u32) -&amp;gt; u32&lt;/code&gt; will do right? No, I’ll explain why in the next point, but for now, we will make use of the &lt;code&gt;Fn&lt;/code&gt; trait, our return type is &lt;code&gt;impl Fn(u32) -&amp;gt; u32&lt;/code&gt;. This basically tells the compiler that we will be returning something function-like, a.k.a, behaves like a &lt;code&gt;Fn&lt;/code&gt;. Cool!&lt;/p&gt;
+&lt;p&gt;If you have been following along, you should be able to tell that the return type of &lt;code&gt;add_curried1&lt;/code&gt; is:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;impl Fn(u32) -&amp;gt; (impl Fn(u32) -&amp;gt; u32)&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;We can drop the parentheses because &lt;code&gt;-&amp;gt;&lt;/code&gt; is right associative:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;impl Fn(u32) -&amp;gt; impl Fn(u32) -&amp;gt; u32
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;strong&gt;Accessing environment&lt;/strong&gt;&lt;br /&gt;
+A function cannot access it’s environment. Our solution will not work. &lt;code&gt;add_curried3&lt;/code&gt; attempts to access &lt;code&gt;x&lt;/code&gt;, which is not allowed! A closure&lt;a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"&gt;&lt;sup&gt;1&lt;/sup&gt;&lt;/a&gt; however, can. If we are returning a closure, our return type must be &lt;code&gt;impl Fn&lt;/code&gt;, and not &lt;code&gt;fn&lt;/code&gt;. The difference between the &lt;code&gt;Fn&lt;/code&gt; trait and function pointers is beyond the scope of this post.&lt;/p&gt;
+&lt;h3 id="refinement"&gt;Refinement&lt;/h3&gt;
+&lt;p&gt;Armed with knowledge, we refine our expected output, this time, employing closures:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb8"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb8-1"&gt;&lt;a href="#cb8-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb8-2"&gt;&lt;a href="#cb8-2" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;y&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;z&lt;span class="op"&gt;|&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb8-3"&gt;&lt;a href="#cb8-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Alas, that does not compile either! It errors out with the following message:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;error[E0562]: `impl Trait` not allowed outside of function
+and inherent method return types
+  --&amp;gt; src/main.rs:17:37
+   |
+   | fn add(x: u32) -&amp;gt; impl Fn(u32) -&amp;gt; impl Fn(u32) -&amp;gt; u32
+   |                                   ^^^^^^^^^^^^^^^^^^^
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;You are allowed to return an &lt;code&gt;impl Fn&lt;/code&gt; only inside a function. We are currently returning it from another return! Or at least, that was the most I could make out of the error message.&lt;/p&gt;
+&lt;p&gt;We are going to have to cheat a bit to fix this issue; with type aliases and a convenient nightly feature &lt;a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"&gt;&lt;sup&gt;2&lt;/sup&gt;&lt;/a&gt;:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb10"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb10-1"&gt;&lt;a href="#cb10-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#![&lt;/span&gt;feature&lt;span class="at"&gt;(&lt;/span&gt;type_alias_impl_trait&lt;span class="at"&gt;)]&lt;/span&gt;  &lt;span class="co"&gt;// allows us to use `impl Fn` in type aliases!&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-2"&gt;&lt;a href="#cb10-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb10-3"&gt;&lt;a href="#cb10-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;                 &lt;span class="co"&gt;// the return value when zero args are to be applied&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-4"&gt;&lt;a href="#cb10-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T0&lt;span class="op"&gt;;&lt;/span&gt;  &lt;span class="co"&gt;// the return value when one arg is to be applied&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-5"&gt;&lt;a href="#cb10-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T2 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T1&lt;span class="op"&gt;;&lt;/span&gt;  &lt;span class="co"&gt;// the return value when two args are to be applied&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-6"&gt;&lt;a href="#cb10-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb10-7"&gt;&lt;a href="#cb10-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T2 &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-8"&gt;&lt;a href="#cb10-8" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;y&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;z&lt;span class="op"&gt;|&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb10-9"&gt;&lt;a href="#cb10-9" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Drop that into a cargo project, call &lt;code&gt;add(4)(5)(6)&lt;/code&gt;, cross your fingers, and run &lt;code&gt;cargo +nightly run&lt;/code&gt;. You should see a 15 unless you forgot to print it!&lt;/p&gt;
+&lt;h3 id="the-in-betweens"&gt;The In-Betweens&lt;/h3&gt;
+&lt;p&gt;Let us write the magical bits that take us from function to curried function.&lt;/p&gt;
+&lt;p&gt;Initialize your workspace with &lt;code&gt;cargo new --lib currying&lt;/code&gt;. Proc-macro crates are libraries with exactly one export, the macro itself. Add a &lt;code&gt;tests&lt;/code&gt; directory to your crate root. Your directory should look something like this:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;.
+├── Cargo.toml
+├── src
+│   └── lib.rs
+└── tests
+    └── smoke.rs&lt;/code&gt;&lt;/pre&gt;
+&lt;h4 id="dependencies"&gt;Dependencies&lt;/h4&gt;
+&lt;p&gt;We will be using a total of 3 external crates:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://docs.rs/proc-macro2/1.0.12/proc_macro2/"&gt;proc_macro2&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://docs.rs/syn/1.0.18/syn/index.html"&gt;syn&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://docs.rs/quote/1.0.4/quote/index.html"&gt;quote&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Here’s a sample &lt;code&gt;Cargo.toml&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# Cargo.toml
+
+[dependencies]
+proc-macro2 = &amp;quot;1.0.9&amp;quot;
+quote = &amp;quot;1.0&amp;quot;
+
+[dependencies.syn]
+version = &amp;quot;1.0&amp;quot;
+features = [&amp;quot;full&amp;quot;]
+
+[lib]
+proc-macro = true  # this is important!&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;We will be using an external &lt;code&gt;proc-macro2&lt;/code&gt; crate as well as an internal &lt;code&gt;proc-macro&lt;/code&gt; crate. Not confusing at all!&lt;/p&gt;
+&lt;h4 id="the-attribute-macro"&gt;The attribute macro&lt;/h4&gt;
+&lt;p&gt;Drop this into &lt;code&gt;src/lib.rs&lt;/code&gt;, to get the ball rolling.&lt;/p&gt;
+&lt;div class="sourceCode" id="cb13"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb13-1"&gt;&lt;a href="#cb13-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-2"&gt;&lt;a href="#cb13-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb13-3"&gt;&lt;a href="#cb13-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;proc_macro::&lt;/span&gt;TokenStream&lt;span class="op"&gt;;&lt;/span&gt;  &lt;span class="co"&gt;// 1&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-4"&gt;&lt;a href="#cb13-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;quote::&lt;/span&gt;quote&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-5"&gt;&lt;a href="#cb13-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;syn::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;parse_macro_input&lt;span class="op"&gt;,&lt;/span&gt; ItemFn&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-6"&gt;&lt;a href="#cb13-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb13-7"&gt;&lt;a href="#cb13-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;proc_macro_attribute&lt;span class="at"&gt;]&lt;/span&gt;   &lt;span class="co"&gt;// 2&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-8"&gt;&lt;a href="#cb13-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;pub&lt;/span&gt; &lt;span class="kw"&gt;fn&lt;/span&gt; curry(_attr&lt;span class="op"&gt;:&lt;/span&gt; TokenStream&lt;span class="op"&gt;,&lt;/span&gt; item&lt;span class="op"&gt;:&lt;/span&gt; TokenStream) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; TokenStream &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-9"&gt;&lt;a href="#cb13-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; parsed &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;parse_macro_input!&lt;/span&gt;(item &lt;span class="kw"&gt;as&lt;/span&gt; ItemFn)&lt;span class="op"&gt;;&lt;/span&gt;  &lt;span class="co"&gt;// 3&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-10"&gt;&lt;a href="#cb13-10" aria-hidden="true"&gt;&lt;/a&gt;  generate_curry(parsed)&lt;span class="op"&gt;.&lt;/span&gt;into()  &lt;span class="co"&gt;// 4&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-11"&gt;&lt;a href="#cb13-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb13-12"&gt;&lt;a href="#cb13-12" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb13-13"&gt;&lt;a href="#cb13-13" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; generate_curry(parsed&lt;span class="op"&gt;:&lt;/span&gt; ItemFn) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;proc_macro2::&lt;/span&gt;TokenStream &lt;span class="op"&gt;{}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;&lt;strong&gt;1. Imports&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;A &lt;code&gt;Tokenstream&lt;/code&gt; holds (hopefully valid) Rust code, this is the type of our input and output. Note that we are importing this type from &lt;code&gt;proc_macro&lt;/code&gt; and not &lt;code&gt;proc_macro2&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;quote!&lt;/code&gt; from the &lt;code&gt;quote&lt;/code&gt; crate is a macro that allows us to quickly produce &lt;code&gt;TokenStream&lt;/code&gt;s. Much like the LISP &lt;code&gt;quote&lt;/code&gt; procedure, you can use the &lt;code&gt;quote!&lt;/code&gt; macro for symbolic transformations.&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;ItemFn&lt;/code&gt; from the &lt;code&gt;syn&lt;/code&gt; crate holds the parsed &lt;code&gt;TokenStream&lt;/code&gt; of a Rust function. &lt;code&gt;parse_macro_input!&lt;/code&gt; is a helper macro provided by &lt;code&gt;syn&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. The lone export&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Annotate the only &lt;code&gt;pub&lt;/code&gt; of our crate with &lt;code&gt;#[proc_macro_attribute]&lt;/code&gt;. This tells rustc that &lt;code&gt;curry&lt;/code&gt; is a procedural macro, and allows us to use it as &lt;code&gt;#[crate_name::curry]&lt;/code&gt; in other crates. Note the signature of the &lt;code&gt;curry&lt;/code&gt; function. &lt;code&gt;_attr&lt;/code&gt; is the &lt;code&gt;TokenStream&lt;/code&gt; representing the attribute itself, &lt;code&gt;item&lt;/code&gt; refers to the thing we slapped our macro into, in this case a function (like &lt;code&gt;add&lt;/code&gt;). The return value is a modified &lt;code&gt;TokenStream&lt;/code&gt;, this will contain our curried version of &lt;code&gt;add&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;3. The helper macro&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;A &lt;code&gt;TokenStream&lt;/code&gt; is a little hard to work with, which is why we have the &lt;code&gt;syn&lt;/code&gt; crate, which provides types to represent Rust tokens. An &lt;code&gt;RArrow&lt;/code&gt; struct to represent the return arrow on a function and so on. One of those types is &lt;code&gt;ItemFn&lt;/code&gt;, that represents an entire Rust function. The &lt;code&gt;parse_macro_input!&lt;/code&gt; automatically puts the input to our macro into an &lt;code&gt;ItemFn&lt;/code&gt;. What a gentleman!&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;4. Returning &lt;code&gt;TokenStream&lt;/code&gt;s &lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;We haven’t filled in &lt;code&gt;generate_curry&lt;/code&gt; yet, but we can see that it returns a &lt;code&gt;proc_macro2::TokenStream&lt;/code&gt; and not a &lt;code&gt;proc_macro::TokenStream&lt;/code&gt;, so drop a &lt;code&gt;.into()&lt;/code&gt; to convert it.&lt;/p&gt;
+&lt;p&gt;Lets move on, and fill in &lt;code&gt;generate_curry&lt;/code&gt;, I would suggest keeping the documentation for &lt;a href="https://docs.rs/syn/1.0.19/syn/struct.ItemFn.html"&gt;&lt;code&gt;syn::ItemFn&lt;/code&gt;&lt;/a&gt; and &lt;a href="https://docs.rs/syn/1.0.19/syn/struct.Signature.html"&gt;&lt;code&gt;syn::Signature&lt;/code&gt;&lt;/a&gt; open.&lt;/p&gt;
+&lt;div class="sourceCode" id="cb14"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb14-1"&gt;&lt;a href="#cb14-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-2"&gt;&lt;a href="#cb14-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb14-3"&gt;&lt;a href="#cb14-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; generate_curry(parsed&lt;span class="op"&gt;:&lt;/span&gt; ItemFn) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;proc_macro2::&lt;/span&gt;TokenStream &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-4"&gt;&lt;a href="#cb14-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; fn_body &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;block&lt;span class="op"&gt;;&lt;/span&gt;      &lt;span class="co"&gt;// function body&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-5"&gt;&lt;a href="#cb14-5" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; sig &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;sig&lt;span class="op"&gt;;&lt;/span&gt;            &lt;span class="co"&gt;// function signature&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-6"&gt;&lt;a href="#cb14-6" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; vis &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;vis&lt;span class="op"&gt;;&lt;/span&gt;            &lt;span class="co"&gt;// visibility, pub or not&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-7"&gt;&lt;a href="#cb14-7" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; fn_name &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;ident&lt;span class="op"&gt;;&lt;/span&gt;         &lt;span class="co"&gt;// function name/identifier&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-8"&gt;&lt;a href="#cb14-8" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; fn_args &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;inputs&lt;span class="op"&gt;;&lt;/span&gt;        &lt;span class="co"&gt;// comma separated args&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-9"&gt;&lt;a href="#cb14-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; fn_return_type &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;output&lt;span class="op"&gt;;&lt;/span&gt; &lt;span class="co"&gt;// return type&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb14-10"&gt;&lt;a href="#cb14-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;We are simply extracting the bits of the function, we will be reusing the original function’s visibility and name. Take a look at what &lt;code&gt;syn::Signature&lt;/code&gt; can tell us about a function:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;                       .-- syn::Ident (ident)
+                      /
+                 fn add(x: u32, y: u32) -&amp;gt; u32
+  (fn_token)      /     ~~~~~~~,~~~~~~  ~~~~~~
+syn::token::Fn --&amp;#39;            /               \       (output)
+                             &amp;#39;                 `- syn::ReturnType
+             Punctuated&amp;lt;FnArg, Comma&amp;gt; (inputs)&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Enough analysis, lets produce our first bit of Rust code.&lt;/p&gt;
+&lt;h4 id="function-body"&gt;Function Body&lt;/h4&gt;
+&lt;p&gt;Recall that the body of a curried &lt;code&gt;add&lt;/code&gt; should look like this:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb16"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb16-1"&gt;&lt;a href="#cb16-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;y&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;z&lt;span class="op"&gt;|&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;And in general:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb17"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb17-1"&gt;&lt;a href="#cb17-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;arg2&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;arg3&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;argN&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="op"&gt;&amp;lt;&lt;/span&gt;function body here&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;We already have the function’s body, provided by &lt;code&gt;fn_body&lt;/code&gt;, in our &lt;code&gt;generate_curry&lt;/code&gt; function. All that’s left to add is the &lt;code&gt;move |arg2| move |arg3| ...&lt;/code&gt; stuff, for which we need to extract the argument identifiers (doc: &lt;a href="https://docs.rs/syn/1.0.18/syn/punctuated/struct.Punctuated.html"&gt;Punctuated&lt;/a&gt;, &lt;a href="https://docs.rs/syn/1.0.18/syn/enum.FnArg.html"&gt;FnArg&lt;/a&gt;, &lt;a href="https://docs.rs/syn/1.0.18/syn/struct.PatType.html"&gt;PatType&lt;/a&gt;):&lt;/p&gt;
+&lt;div class="sourceCode" id="cb18"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb18-1"&gt;&lt;a href="#cb18-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb18-2"&gt;&lt;a href="#cb18-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;syn::punctuated::&lt;/span&gt;Punctuated&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb18-3"&gt;&lt;a href="#cb18-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;syn::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;parse_macro_input&lt;span class="op"&gt;,&lt;/span&gt; FnArg&lt;span class="op"&gt;,&lt;/span&gt; Pat&lt;span class="op"&gt;,&lt;/span&gt; ItemFn&lt;span class="op"&gt;,&lt;/span&gt; Block&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb18-4"&gt;&lt;a href="#cb18-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb18-5"&gt;&lt;a href="#cb18-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; extract_arg_idents(fn_args&lt;span class="op"&gt;:&lt;/span&gt; Punctuated&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;FnArg&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="pp"&gt;syn::token::&lt;/span&gt;Comma&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Pat&lt;span class="op"&gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt; &lt;/span&gt;
+&lt;span id="cb18-6"&gt;&lt;a href="#cb18-6" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; fn_args&lt;span class="op"&gt;.&lt;/span&gt;into_iter()&lt;span class="op"&gt;.&lt;/span&gt;map(extract_arg_pat)&lt;span class="op"&gt;.&lt;/span&gt;&lt;span class="pp"&gt;collect::&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;_&lt;span class="op"&gt;&amp;gt;&amp;gt;&lt;/span&gt;()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb18-7"&gt;&lt;a href="#cb18-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Alright, so we are iterating over function args (&lt;code&gt;Punctuated&lt;/code&gt; is a collection that you can iterate over) and mapping an &lt;code&gt;extract_arg_pat&lt;/code&gt; to every item. What’s &lt;code&gt;extract_arg_pat&lt;/code&gt;?&lt;/p&gt;
+&lt;div class="sourceCode" id="cb19"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb19-1"&gt;&lt;a href="#cb19-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-2"&gt;&lt;a href="#cb19-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb19-3"&gt;&lt;a href="#cb19-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; extract_arg_pat(a&lt;span class="op"&gt;:&lt;/span&gt; FnArg) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Pat&lt;span class="op"&gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-4"&gt;&lt;a href="#cb19-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;match&lt;/span&gt; a &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-5"&gt;&lt;a href="#cb19-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="pp"&gt;FnArg::&lt;/span&gt;Typed(p) &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; p&lt;span class="op"&gt;.&lt;/span&gt;pat&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-6"&gt;&lt;a href="#cb19-6" aria-hidden="true"&gt;&lt;/a&gt;    _ &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;panic!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;Not supported on types with `self`!&amp;quot;&lt;/span&gt;)&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-7"&gt;&lt;a href="#cb19-7" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb19-8"&gt;&lt;a href="#cb19-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;&lt;code&gt;FnArg&lt;/code&gt; is an enum type as you might have guessed. The &lt;code&gt;Typed&lt;/code&gt; variant encompasses args that are written as &lt;code&gt;name: type&lt;/code&gt; and the other variant, &lt;code&gt;Reciever&lt;/code&gt; refers to &lt;code&gt;self&lt;/code&gt; types. Ignore those for now, keep it simple.&lt;/p&gt;
+&lt;p&gt;Every &lt;code&gt;FnArg::Typed&lt;/code&gt; value contains a &lt;code&gt;pat&lt;/code&gt;, which is in essence, the name of the argument. The type of the arg is accessible via &lt;code&gt;p.ty&lt;/code&gt; (we will be using this later).&lt;/p&gt;
+&lt;p&gt;With that done, we should be able to write the codegen for the function body:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb20"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb20-1"&gt;&lt;a href="#cb20-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb20-2"&gt;&lt;a href="#cb20-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb20-3"&gt;&lt;a href="#cb20-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; generate_body(fn_args&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;[&lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Pat&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;]&lt;span class="op"&gt;,&lt;/span&gt; body&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Block&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;proc_macro2::&lt;/span&gt;TokenStream &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb20-4"&gt;&lt;a href="#cb20-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="pp"&gt;quote!&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb20-5"&gt;&lt;a href="#cb20-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="kw"&gt;return&lt;/span&gt; #( &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;#fn_args&lt;span class="op"&gt;|&lt;/span&gt;  )&lt;span class="op"&gt;*&lt;/span&gt; #body&lt;/span&gt;
+&lt;span id="cb20-6"&gt;&lt;a href="#cb20-6" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb20-7"&gt;&lt;a href="#cb20-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;That is some scary looking syntax! Allow me to explain. The &lt;code&gt;quote!{ ... }&lt;/code&gt; returns a &lt;code&gt;proc_macro2::TokenStream&lt;/code&gt;, if we wrote &lt;code&gt;quote!{ let x = 1 + 2; }&lt;/code&gt;, it wouldn’t create a new variable &lt;code&gt;x&lt;/code&gt; with value 3, it would literally produce a stream of tokens with that expression.&lt;/p&gt;
+&lt;p&gt;The &lt;code&gt;#&lt;/code&gt; enables variable interpolation. &lt;code&gt;#body&lt;/code&gt; will look for &lt;code&gt;body&lt;/code&gt; in the current scope, take its value, and insert it in the returned &lt;code&gt;TokenStream&lt;/code&gt;. Kinda like quasi quoting in LISPs, you have written one.&lt;/p&gt;
+&lt;p&gt;What about &lt;code&gt;#( move |#fn_args| )*&lt;/code&gt;? That is repetition. &lt;code&gt;quote&lt;/code&gt; iterates through &lt;code&gt;fn_args&lt;/code&gt;, and drops a &lt;code&gt;move&lt;/code&gt; behind each one, it then places pipes (&lt;code&gt;|&lt;/code&gt;), around it.&lt;/p&gt;
+&lt;p&gt;Let us test our first bit of codegen! Modify &lt;code&gt;generate_curry&lt;/code&gt; like so:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb21"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb21-1"&gt;&lt;a href="#cb21-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-2"&gt;&lt;a href="#cb21-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb21-3"&gt;&lt;a href="#cb21-3" aria-hidden="true"&gt;&lt;/a&gt; &lt;span class="kw"&gt;fn&lt;/span&gt; generate_curry(parsed&lt;span class="op"&gt;:&lt;/span&gt; ItemFn) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; TokenStream &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-4"&gt;&lt;a href="#cb21-4" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_body &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;block&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-5"&gt;&lt;a href="#cb21-5" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; sig &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;sig&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-6"&gt;&lt;a href="#cb21-6" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; vis &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;vis&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-7"&gt;&lt;a href="#cb21-7" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_name &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;ident&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-8"&gt;&lt;a href="#cb21-8" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_args &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;inputs&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-9"&gt;&lt;a href="#cb21-9" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_return_type &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;output&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-10"&gt;&lt;a href="#cb21-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb21-11"&gt;&lt;a href="#cb21-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; arg_idents &lt;span class="op"&gt;=&lt;/span&gt; extract_arg_idents(fn_args&lt;span class="op"&gt;.&lt;/span&gt;clone())&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-12"&gt;&lt;a href="#cb21-12" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; first_ident &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_idents&lt;span class="op"&gt;.&lt;/span&gt;first()&lt;span class="op"&gt;.&lt;/span&gt;unwrap()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-13"&gt;&lt;a href="#cb21-13" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb21-14"&gt;&lt;a href="#cb21-14" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="co"&gt;// remember, our curried body starts with the second argument!&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-15"&gt;&lt;a href="#cb21-15" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; curried_body &lt;span class="op"&gt;=&lt;/span&gt; generate_body(&lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_idents[&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..&lt;/span&gt;]&lt;span class="op"&gt;,&lt;/span&gt; fn_body&lt;span class="op"&gt;.&lt;/span&gt;clone())&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-16"&gt;&lt;a href="#cb21-16" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="pp"&gt;println!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; curried_body)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-17"&gt;&lt;a href="#cb21-17" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb21-18"&gt;&lt;a href="#cb21-18" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="pp"&gt;TokenStream::&lt;/span&gt;new()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb21-19"&gt;&lt;a href="#cb21-19" aria-hidden="true"&gt;&lt;/a&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Add a little test to &lt;code&gt;tests/&lt;/code&gt;:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb22"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb22-1"&gt;&lt;a href="#cb22-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// tests/smoke.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-2"&gt;&lt;a href="#cb22-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb22-3"&gt;&lt;a href="#cb22-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;&lt;span class="pp"&gt;currying::&lt;/span&gt;curry&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-4"&gt;&lt;a href="#cb22-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; y&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; z&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-5"&gt;&lt;a href="#cb22-5" aria-hidden="true"&gt;&lt;/a&gt;  x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;/span&gt;
+&lt;span id="cb22-6"&gt;&lt;a href="#cb22-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-7"&gt;&lt;a href="#cb22-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb22-8"&gt;&lt;a href="#cb22-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;test&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-9"&gt;&lt;a href="#cb22-9" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; works() &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-10"&gt;&lt;a href="#cb22-10" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="pp"&gt;assert!&lt;/span&gt;(&lt;span class="cn"&gt;true&lt;/span&gt;)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb22-11"&gt;&lt;a href="#cb22-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;You should find something like this in the output of &lt;code&gt;cargo test&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;return move | y | move | z | { x + y + z }&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Glorious &lt;code&gt;println!&lt;/code&gt; debugging!&lt;/p&gt;
+&lt;h4 id="function-signature"&gt;Function signature&lt;/h4&gt;
+&lt;p&gt;This section gets into the more complicated bits of the macro, generating type aliases and the function signature. By the end of this section, we should have a full working auto-currying macro!&lt;/p&gt;
+&lt;p&gt;Recall what our generated type aliases should look like, for our &lt;code&gt;add&lt;/code&gt; function:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb24"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb24-1"&gt;&lt;a href="#cb24-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb24-2"&gt;&lt;a href="#cb24-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb24-3"&gt;&lt;a href="#cb24-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T2 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T1&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;In general:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb25"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb25-1"&gt;&lt;a href="#cb25-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="kw"&gt;type&lt;/span&gt;&amp;gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-2"&gt;&lt;a href="#cb25-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="kw"&gt;type&lt;/span&gt; of arg N&amp;gt;) -&amp;gt; T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-3"&gt;&lt;a href="#cb25-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T2 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="kw"&gt;type&lt;/span&gt; of arg N - 1&amp;gt;) -&amp;gt; T1&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-4"&gt;&lt;a href="#cb25-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;.&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-5"&gt;&lt;a href="#cb25-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;.&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-6"&gt;&lt;a href="#cb25-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;.&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb25-7"&gt;&lt;a href="#cb25-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T(N-1) &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="kw"&gt;type&lt;/span&gt; of arg 2&amp;gt;) -&amp;gt; T(N-2)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;To codegen that, we need the types of:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;all our inputs (arguments)&lt;/li&gt;
+&lt;li&gt;the output (the return type)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;To fetch the types of all our inputs, we can simply reuse the bits we wrote to fetch the names of all our inputs! (doc: &lt;a href="https://docs.rs/syn/1.0.18/syn/enum.Type.html"&gt;Type&lt;/a&gt;)&lt;/p&gt;
+&lt;div class="sourceCode" id="cb26"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb26-1"&gt;&lt;a href="#cb26-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-2"&gt;&lt;a href="#cb26-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb26-3"&gt;&lt;a href="#cb26-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;syn::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;parse_macro_input&lt;span class="op"&gt;,&lt;/span&gt; Block&lt;span class="op"&gt;,&lt;/span&gt; FnArg&lt;span class="op"&gt;,&lt;/span&gt; ItemFn&lt;span class="op"&gt;,&lt;/span&gt; Pat&lt;span class="op"&gt;,&lt;/span&gt; ReturnType&lt;span class="op"&gt;,&lt;/span&gt; Type&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-4"&gt;&lt;a href="#cb26-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb26-5"&gt;&lt;a href="#cb26-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; extract_type(a&lt;span class="op"&gt;:&lt;/span&gt; FnArg) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Type&lt;span class="op"&gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-6"&gt;&lt;a href="#cb26-6" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;match&lt;/span&gt; a &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-7"&gt;&lt;a href="#cb26-7" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="pp"&gt;FnArg::&lt;/span&gt;Typed(p) &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; p&lt;span class="op"&gt;.&lt;/span&gt;ty&lt;span class="op"&gt;,&lt;/span&gt;  &lt;span class="co"&gt;// notice `ty` instead of `pat`&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-8"&gt;&lt;a href="#cb26-8" aria-hidden="true"&gt;&lt;/a&gt;      _ &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;panic!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;Not supported on types with `self`!&amp;quot;&lt;/span&gt;)&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-9"&gt;&lt;a href="#cb26-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-10"&gt;&lt;a href="#cb26-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-11"&gt;&lt;a href="#cb26-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb26-12"&gt;&lt;a href="#cb26-12" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; extract_arg_types(fn_args&lt;span class="op"&gt;:&lt;/span&gt; Punctuated&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;FnArg&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="pp"&gt;syn::token::&lt;/span&gt;Comma&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Type&lt;span class="op"&gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-13"&gt;&lt;a href="#cb26-13" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; fn_args&lt;span class="op"&gt;.&lt;/span&gt;into_iter()&lt;span class="op"&gt;.&lt;/span&gt;map(extract_type)&lt;span class="op"&gt;.&lt;/span&gt;&lt;span class="pp"&gt;collect::&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;_&lt;span class="op"&gt;&amp;gt;&amp;gt;&lt;/span&gt;()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb26-14"&gt;&lt;a href="#cb26-14" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb26-15"&gt;&lt;a href="#cb26-15" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;A good reader would have looked at the docs for output member of the &lt;code&gt;syn::Signature&lt;/code&gt; struct. It has the type &lt;code&gt;syn::ReturnType&lt;/code&gt;. So there is no extraction to do here right? There are actually a couple of things we have to ensure here:&lt;/p&gt;
+&lt;ol type="1"&gt;
+&lt;li&gt;&lt;p&gt;We need to ensure that the function returns! A function that does not return is pointless in this case, and I will tell you why, in the &lt;a href="#notes"&gt;Notes&lt;/a&gt; section.&lt;/p&gt;&lt;/li&gt;
+&lt;li&gt;&lt;p&gt;A &lt;code&gt;ReturnType&lt;/code&gt; encloses the arrow of the return as well, we need to get rid of that. Recall:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb27"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb27-1"&gt;&lt;a href="#cb27-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb27-2"&gt;&lt;a href="#cb27-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// and not&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb27-3"&gt;&lt;a href="#cb27-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Here is the snippet that handles extraction of the return type (doc: &lt;a href="https://docs.rs/syn/1.0.19/syn/enum.ReturnType.html"&gt;syn::ReturnType&lt;/a&gt;):&lt;/p&gt;
+&lt;div class="sourceCode" id="cb28"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb28-1"&gt;&lt;a href="#cb28-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-2"&gt;&lt;a href="#cb28-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb28-3"&gt;&lt;a href="#cb28-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; extract_return_type(a&lt;span class="op"&gt;:&lt;/span&gt; ReturnType) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Type&lt;span class="op"&gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-4"&gt;&lt;a href="#cb28-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;match&lt;/span&gt; a &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-5"&gt;&lt;a href="#cb28-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="pp"&gt;ReturnType::&lt;/span&gt;Type(_&lt;span class="op"&gt;,&lt;/span&gt; p) &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; p&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-6"&gt;&lt;a href="#cb28-6" aria-hidden="true"&gt;&lt;/a&gt;    _ &lt;span class="op"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;panic!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;Not supported on functions without return types!&amp;quot;&lt;/span&gt;)&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-7"&gt;&lt;a href="#cb28-7" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb28-8"&gt;&lt;a href="#cb28-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;You might notice that we are making extensive use of the &lt;code&gt;panic!&lt;/code&gt; macro. Well, that is because it is a good idea to quit on receiving an unsatisfactory &lt;code&gt;TokenStream&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;With all our types ready, we can get on with generating type aliases:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb29"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb29-1"&gt;&lt;a href="#cb29-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-2"&gt;&lt;a href="#cb29-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-3"&gt;&lt;a href="#cb29-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;quote::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;quote&lt;span class="op"&gt;,&lt;/span&gt; format_ident&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-4"&gt;&lt;a href="#cb29-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-5"&gt;&lt;a href="#cb29-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; generate_type_aliases(&lt;/span&gt;
+&lt;span id="cb29-6"&gt;&lt;a href="#cb29-6" aria-hidden="true"&gt;&lt;/a&gt;  fn_arg_types&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;[&lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Type&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;]&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-7"&gt;&lt;a href="#cb29-7" aria-hidden="true"&gt;&lt;/a&gt;  fn_return_type&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;Box&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Type&lt;span class="op"&gt;&amp;gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-8"&gt;&lt;a href="#cb29-8" aria-hidden="true"&gt;&lt;/a&gt;  fn_name&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;&lt;span class="pp"&gt;syn::&lt;/span&gt;Ident&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-9"&gt;&lt;a href="#cb29-9" aria-hidden="true"&gt;&lt;/a&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="pp"&gt;proc_macro2::&lt;/span&gt;TokenStream&lt;span class="op"&gt;&amp;gt;&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;    &lt;span class="co"&gt;// 1&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-10"&gt;&lt;a href="#cb29-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-11"&gt;&lt;a href="#cb29-11" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; type_t0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;format_ident!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;_{}_T0&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; fn_name)&lt;span class="op"&gt;;&lt;/span&gt;    &lt;span class="co"&gt;// 2&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-12"&gt;&lt;a href="#cb29-12" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; &lt;span class="kw"&gt;mut&lt;/span&gt; type_aliases &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;vec!&lt;/span&gt;[&lt;span class="pp"&gt;quote!&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="kw"&gt;type&lt;/span&gt; #type_t0 &lt;span class="op"&gt;=&lt;/span&gt; #fn_return_type  &lt;span class="op"&gt;}&lt;/span&gt;]&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-13"&gt;&lt;a href="#cb29-13" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-14"&gt;&lt;a href="#cb29-14" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="co"&gt;// 3&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-15"&gt;&lt;a href="#cb29-15" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;for&lt;/span&gt; (i&lt;span class="op"&gt;,&lt;/span&gt; t) &lt;span class="kw"&gt;in&lt;/span&gt; (&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..&lt;/span&gt;)&lt;span class="op"&gt;.&lt;/span&gt;zip(fn_arg_types&lt;span class="op"&gt;.&lt;/span&gt;into_iter()&lt;span class="op"&gt;.&lt;/span&gt;rev()) &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-16"&gt;&lt;a href="#cb29-16" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="kw"&gt;let&lt;/span&gt; p &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;format_ident!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;_{}_{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; fn_name&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="pp"&gt;format!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;T{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; i &lt;span class="op"&gt;-&lt;/span&gt; &lt;span class="dv"&gt;1&lt;/span&gt;))&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-17"&gt;&lt;a href="#cb29-17" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="kw"&gt;let&lt;/span&gt; n &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;format_ident!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;_{}_{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; fn_name&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="pp"&gt;format!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;T{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; i))&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-18"&gt;&lt;a href="#cb29-18" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-19"&gt;&lt;a href="#cb29-19" aria-hidden="true"&gt;&lt;/a&gt;    type_aliases&lt;span class="op"&gt;.&lt;/span&gt;push(&lt;span class="pp"&gt;quote!&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-20"&gt;&lt;a href="#cb29-20" aria-hidden="true"&gt;&lt;/a&gt;        &lt;span class="kw"&gt;type&lt;/span&gt; #n &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(#t) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; #p&lt;/span&gt;
+&lt;span id="cb29-21"&gt;&lt;a href="#cb29-21" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="op"&gt;}&lt;/span&gt;)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-22"&gt;&lt;a href="#cb29-22" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-23"&gt;&lt;a href="#cb29-23" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb29-24"&gt;&lt;a href="#cb29-24" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; type_aliases&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb29-25"&gt;&lt;a href="#cb29-25" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;&lt;strong&gt;1. The return value&lt;/strong&gt;&lt;br /&gt;
+We are returning a &lt;code&gt;Vec&amp;lt;proc_macro2::TokenStream&amp;gt;&lt;/code&gt;, i. e., a list of &lt;code&gt;TokenStream&lt;/code&gt;s, where each item is a type alias.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. Format identifier?&lt;/strong&gt;&lt;br /&gt;
+I’ve got some explanation to do on this line. Clearly, we are trying to write the first type alias, and initialize our &lt;code&gt;TokenStream&lt;/code&gt; vector with &lt;code&gt;T0&lt;/code&gt;, because it is different from the others:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb30"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb30-1"&gt;&lt;a href="#cb30-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; something&lt;/span&gt;
+&lt;span id="cb30-2"&gt;&lt;a href="#cb30-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// the others are of the form&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb30-3"&gt;&lt;a href="#cb30-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; Tr &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(something) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; something&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;&lt;code&gt;format_ident!&lt;/code&gt; is similar to &lt;code&gt;format!&lt;/code&gt;. Instead of returning a formatted string, it returns a &lt;code&gt;syn::Ident&lt;/code&gt;. Therefore, &lt;code&gt;type_t0&lt;/code&gt; is actually an identifier for, in the case of our &lt;code&gt;add&lt;/code&gt; function, &lt;code&gt;_add_T0&lt;/code&gt;. Why is this formatting important? Namespacing.&lt;/p&gt;
+&lt;p&gt;Picture this, we have two functions, &lt;code&gt;add&lt;/code&gt; and &lt;code&gt;subtract&lt;/code&gt;, that we wish to curry with our macro:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb31"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb31-1"&gt;&lt;a href="#cb31-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;curry&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb31-2"&gt;&lt;a href="#cb31-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(&lt;span class="op"&gt;...&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb31-3"&gt;&lt;a href="#cb31-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb31-4"&gt;&lt;a href="#cb31-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;curry&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb31-5"&gt;&lt;a href="#cb31-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; sub(&lt;span class="op"&gt;...&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Here is the same but with macros expanded:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb32"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb32-1"&gt;&lt;a href="#cb32-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb32-2"&gt;&lt;a href="#cb32-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb32-3"&gt;&lt;a href="#cb32-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add( &lt;span class="op"&gt;...&lt;/span&gt; ) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T1 &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb32-4"&gt;&lt;a href="#cb32-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb32-5"&gt;&lt;a href="#cb32-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb32-6"&gt;&lt;a href="#cb32-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb32-7"&gt;&lt;a href="#cb32-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; sub( &lt;span class="op"&gt;...&lt;/span&gt; ) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; T1 &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;We end up with two definitions of &lt;code&gt;T0&lt;/code&gt;! Now, if we do the little &lt;code&gt;format_ident!&lt;/code&gt; dance we did up there:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb33"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb33-1"&gt;&lt;a href="#cb33-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _add_T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb33-2"&gt;&lt;a href="#cb33-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _add_T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _add_T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb33-3"&gt;&lt;a href="#cb33-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add( &lt;span class="op"&gt;...&lt;/span&gt; ) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _add_T1 &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb33-4"&gt;&lt;a href="#cb33-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb33-5"&gt;&lt;a href="#cb33-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _sub_T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb33-6"&gt;&lt;a href="#cb33-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _sub_T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _sub_T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb33-7"&gt;&lt;a href="#cb33-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; sub( &lt;span class="op"&gt;...&lt;/span&gt; ) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _sub_T1 &lt;span class="op"&gt;{&lt;/span&gt; &lt;span class="op"&gt;...&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Voilà! The type aliases don’t tread on each other. Remember to import &lt;code&gt;format_ident&lt;/code&gt; from the &lt;code&gt;quote&lt;/code&gt; crate.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;3. The TokenStream Vector&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;We iterate over our types in reverse order (&lt;code&gt;T0&lt;/code&gt; is the last return, &lt;code&gt;T1&lt;/code&gt; is the second last, so on), assign a number to each iteration with &lt;code&gt;zip&lt;/code&gt;, generate type names with &lt;code&gt;format_ident&lt;/code&gt;, push a &lt;code&gt;TokenStream&lt;/code&gt; with the help of &lt;code&gt;quote&lt;/code&gt; and variable interpolation.&lt;/p&gt;
+&lt;p&gt;If you are wondering why we used &lt;code&gt;(1..).zip()&lt;/code&gt; instead of &lt;code&gt;.enumerate()&lt;/code&gt;, it’s because we wanted to start counting from 1 instead of 0 (we are already done with &lt;code&gt;T0&lt;/code&gt;!).&lt;/p&gt;
+&lt;h4 id="getting-it-together"&gt;Getting it together&lt;/h4&gt;
+&lt;p&gt;I promised we’d have a fully working macro by the end of last section. I lied, we have to tie everything together in our &lt;code&gt;generate_curry&lt;/code&gt; function:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb34"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb34-1"&gt;&lt;a href="#cb34-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// src/lib.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-2"&gt;&lt;a href="#cb34-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb34-3"&gt;&lt;a href="#cb34-3" aria-hidden="true"&gt;&lt;/a&gt; &lt;span class="kw"&gt;fn&lt;/span&gt; generate_curry(parsed&lt;span class="op"&gt;:&lt;/span&gt; ItemFn) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="pp"&gt;proc_macro2::&lt;/span&gt;TokenStream &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-4"&gt;&lt;a href="#cb34-4" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_body &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;block&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-5"&gt;&lt;a href="#cb34-5" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; sig &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;sig&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-6"&gt;&lt;a href="#cb34-6" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; vis &lt;span class="op"&gt;=&lt;/span&gt; parsed&lt;span class="op"&gt;.&lt;/span&gt;vis&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-7"&gt;&lt;a href="#cb34-7" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_name &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;ident&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-8"&gt;&lt;a href="#cb34-8" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_args &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;inputs&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-9"&gt;&lt;a href="#cb34-9" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; fn_return_type &lt;span class="op"&gt;=&lt;/span&gt; sig&lt;span class="op"&gt;.&lt;/span&gt;output&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-10"&gt;&lt;a href="#cb34-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb34-11"&gt;&lt;a href="#cb34-11" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; arg_idents &lt;span class="op"&gt;=&lt;/span&gt; extract_arg_idents(fn_args&lt;span class="op"&gt;.&lt;/span&gt;clone())&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-12"&gt;&lt;a href="#cb34-12" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; first_ident &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_idents&lt;span class="op"&gt;.&lt;/span&gt;first()&lt;span class="op"&gt;.&lt;/span&gt;unwrap()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-13"&gt;&lt;a href="#cb34-13" aria-hidden="true"&gt;&lt;/a&gt;   &lt;span class="kw"&gt;let&lt;/span&gt; curried_body &lt;span class="op"&gt;=&lt;/span&gt; generate_body(&lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_idents[&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..&lt;/span&gt;]&lt;span class="op"&gt;,&lt;/span&gt; fn_body&lt;span class="op"&gt;.&lt;/span&gt;clone())&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-14"&gt;&lt;a href="#cb34-14" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb34-15"&gt;&lt;a href="#cb34-15" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; arg_types &lt;span class="op"&gt;=&lt;/span&gt; extract_arg_types(fn_args&lt;span class="op"&gt;.&lt;/span&gt;clone())&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-16"&gt;&lt;a href="#cb34-16" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; first_type &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_types&lt;span class="op"&gt;.&lt;/span&gt;first()&lt;span class="op"&gt;.&lt;/span&gt;unwrap()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-17"&gt;&lt;a href="#cb34-17" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; type_aliases &lt;span class="op"&gt;=&lt;/span&gt; generate_type_aliases(&lt;/span&gt;
+&lt;span id="cb34-18"&gt;&lt;a href="#cb34-18" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;arg_types[&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..&lt;/span&gt;]&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-19"&gt;&lt;a href="#cb34-19" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      extract_return_type(fn_return_type)&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-20"&gt;&lt;a href="#cb34-20" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;fn_name&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-21"&gt;&lt;a href="#cb34-21" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  )&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-22"&gt;&lt;a href="#cb34-22" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb34-23"&gt;&lt;a href="#cb34-23" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; return_type &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="pp"&gt;format_ident!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;_{}_{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="op"&gt;&amp;amp;&lt;/span&gt;fn_name&lt;span class="op"&gt;,&lt;/span&gt; &lt;span class="pp"&gt;format!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;T{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; type_aliases&lt;span class="op"&gt;.&lt;/span&gt;len() &lt;span class="op"&gt;-&lt;/span&gt; &lt;span class="dv"&gt;1&lt;/span&gt;))&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-24"&gt;&lt;a href="#cb34-24" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb34-25"&gt;&lt;a href="#cb34-25" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; &lt;span class="pp"&gt;quote!&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-26"&gt;&lt;a href="#cb34-26" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      #(#type_aliases)&lt;span class="op"&gt;;*&lt;/span&gt; &lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-27"&gt;&lt;a href="#cb34-27" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      #vis &lt;span class="kw"&gt;fn&lt;/span&gt; #fn_name (#first_ident&lt;span class="op"&gt;:&lt;/span&gt; #first_type) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; #return_type &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-28"&gt;&lt;a href="#cb34-28" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;          #curried_body &lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-29"&gt;&lt;a href="#cb34-29" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;      &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-30"&gt;&lt;a href="#cb34-30" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;+&lt;/span&gt;  &lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb34-31"&gt;&lt;a href="#cb34-31" aria-hidden="true"&gt;&lt;/a&gt; &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Most of the additions are self explanatory, I’ll go through the return statement with you. We are returning a &lt;code&gt;quote!{ ... }&lt;/code&gt;, so a &lt;code&gt;proc_macro2::TokenStream&lt;/code&gt;. We are iterating through the &lt;code&gt;type_aliases&lt;/code&gt; variable, which you might recall, is a &lt;code&gt;Vec&amp;lt;TokenStream&amp;gt;&lt;/code&gt;. You might notice the sneaky semicolon before the &lt;code&gt;*&lt;/code&gt;. This basically tells &lt;code&gt;quote&lt;/code&gt;, to insert an item, then a semicolon, and then the next one, another semicolon, and so on. The semicolon is a separator. We need to manually insert another semicolon at the end of it all, &lt;code&gt;quote&lt;/code&gt; doesn’t insert a separator at the end of the iteration.&lt;/p&gt;
+&lt;p&gt;We retain the visibility and name of our original function. Our curried function takes as args, just the first argument of our original function. The return type of our curried function is actually, the last type alias we create. If you think back to our manually curried &lt;code&gt;add&lt;/code&gt; function, we returned &lt;code&gt;T2&lt;/code&gt;, which was in fact, the last type alias we created.&lt;/p&gt;
+&lt;p&gt;I am sure, at this point, you are itching to test this out, but before that, let me introduce you to some good methods of debugging proc-macro code.&lt;/p&gt;
+&lt;h3 id="debugging-and-testing"&gt;Debugging and Testing&lt;/h3&gt;
+&lt;p&gt;Install &lt;code&gt;cargo-expand&lt;/code&gt; via:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;cargo install cargo-expand&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;cargo-expand&lt;/code&gt; is a neat little tool that expands your macro in places where it is used, and lets you view the generated code! For example:&lt;/p&gt;
+&lt;pre class="shell"&gt;&lt;code&gt;# create a bin package hello
+$ cargo new hello
+
+# view the expansion of the println! macro
+$ cargo expand
+
+#![feature(prelude_import)]
+#[prelude_import]
+use std::prelude::v1::*;
+#[macro_use]
+extern crate std;
+fn main() {
+  {
+    ::std::io::_print(::core::fmt::Arguments::new_v1(
+        &amp;amp;[&amp;quot;Hello, world!\n&amp;quot;],
+        &amp;amp;match () {
+            () =&amp;gt; [],
+        },
+      ));
+  };
+}&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Writing proc-macros without &lt;code&gt;cargo-expand&lt;/code&gt; is tantamount to driving a vehicle without rear view mirrors! Keep an eye on what is going on behind your back.&lt;/p&gt;
+&lt;p&gt;Now, your macro won’t always compile, you might just recieve the bee movie script as an error. &lt;code&gt;cargo-expand&lt;/code&gt; will not work in such cases. I would suggest printing out your variables to inspect them. &lt;code&gt;TokenStream&lt;/code&gt; implements &lt;code&gt;Display&lt;/code&gt; as well as &lt;code&gt;Debug&lt;/code&gt;. We don’t always have to be respectable programmers. Just print it.&lt;/p&gt;
+&lt;p&gt;Enough of that, lets get testing:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb37"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb37-1"&gt;&lt;a href="#cb37-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// tests/smoke.rs&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-2"&gt;&lt;a href="#cb37-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb37-3"&gt;&lt;a href="#cb37-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#![&lt;/span&gt;feature&lt;span class="at"&gt;(&lt;/span&gt;type_alias_impl_trait&lt;span class="at"&gt;)]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-4"&gt;&lt;a href="#cb37-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb37-5"&gt;&lt;a href="#cb37-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;&lt;span class="pp"&gt;crate_name::&lt;/span&gt;curry&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-6"&gt;&lt;a href="#cb37-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; y&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; z&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-7"&gt;&lt;a href="#cb37-7" aria-hidden="true"&gt;&lt;/a&gt;   x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;/span&gt;
+&lt;span id="cb37-8"&gt;&lt;a href="#cb37-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-9"&gt;&lt;a href="#cb37-9" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb37-10"&gt;&lt;a href="#cb37-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;test&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-11"&gt;&lt;a href="#cb37-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; works() &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-12"&gt;&lt;a href="#cb37-12" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="pp"&gt;assert_eq!&lt;/span&gt;(&lt;span class="dv"&gt;15&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; add(&lt;span class="dv"&gt;4&lt;/span&gt;)(&lt;span class="dv"&gt;5&lt;/span&gt;)(&lt;span class="dv"&gt;6&lt;/span&gt;))&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb37-13"&gt;&lt;a href="#cb37-13" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Run &lt;code&gt;cargo +nightly test&lt;/code&gt;. You should see a pleasing message:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;running 1 test
+test tests::works ... ok&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Take a look at the expansion for our curry macro, via &lt;code&gt;cargo +nightly expand --tests smoke&lt;/code&gt;:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb39"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb39-1"&gt;&lt;a href="#cb39-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _add_T0 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-2"&gt;&lt;a href="#cb39-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _add_T1 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _add_T0&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-3"&gt;&lt;a href="#cb39-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;type&lt;/span&gt; _add_T2 &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="kw"&gt;impl&lt;/span&gt; &lt;span class="bu"&gt;Fn&lt;/span&gt;(&lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _add_T1&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-4"&gt;&lt;a href="#cb39-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; add(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; _add_T2 &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-5"&gt;&lt;a href="#cb39-5" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; (&lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;y&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-6"&gt;&lt;a href="#cb39-6" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="kw"&gt;move&lt;/span&gt; &lt;span class="op"&gt;|&lt;/span&gt;z&lt;span class="op"&gt;|&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-7"&gt;&lt;a href="#cb39-7" aria-hidden="true"&gt;&lt;/a&gt;      &lt;span class="kw"&gt;return&lt;/span&gt; x &lt;span class="op"&gt;+&lt;/span&gt; y &lt;span class="op"&gt;+&lt;/span&gt; z&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-8"&gt;&lt;a href="#cb39-8" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-9"&gt;&lt;a href="#cb39-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-10"&gt;&lt;a href="#cb39-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb39-11"&gt;&lt;a href="#cb39-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb39-12"&gt;&lt;a href="#cb39-12" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;// a bunch of other stuff generated by #[test] and assert_eq!&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;A sight for sore eyes.&lt;/p&gt;
+&lt;p&gt;Here is a more complex example that generates ten multiples of the first ten natural numbers:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb40"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb40-1"&gt;&lt;a href="#cb40-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="at"&gt;#[&lt;/span&gt;curry&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-2"&gt;&lt;a href="#cb40-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; product(x&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; y&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt;) &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;u32&lt;/span&gt; &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-3"&gt;&lt;a href="#cb40-3" aria-hidden="true"&gt;&lt;/a&gt;  x &lt;span class="op"&gt;*&lt;/span&gt; y&lt;/span&gt;
+&lt;span id="cb40-4"&gt;&lt;a href="#cb40-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-5"&gt;&lt;a href="#cb40-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb40-6"&gt;&lt;a href="#cb40-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;fn&lt;/span&gt; multiples() &lt;span class="op"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;Vec&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;&lt;span class="dt"&gt;u32&lt;/span&gt;&lt;span class="op"&gt;&amp;gt;&amp;gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-7"&gt;&lt;a href="#cb40-7" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; v &lt;span class="op"&gt;=&lt;/span&gt; (&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..=&lt;/span&gt;&lt;span class="dv"&gt;10&lt;/span&gt;)&lt;span class="op"&gt;.&lt;/span&gt;map(product)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-8"&gt;&lt;a href="#cb40-8" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;return&lt;/span&gt; (&lt;span class="dv"&gt;1&lt;/span&gt;&lt;span class="op"&gt;..=&lt;/span&gt;&lt;span class="dv"&gt;10&lt;/span&gt;)&lt;/span&gt;
+&lt;span id="cb40-9"&gt;&lt;a href="#cb40-9" aria-hidden="true"&gt;&lt;/a&gt;      &lt;span class="op"&gt;.&lt;/span&gt;map(&lt;span class="op"&gt;|&lt;/span&gt;x&lt;span class="op"&gt;|&lt;/span&gt; v&lt;span class="op"&gt;.&lt;/span&gt;clone()&lt;span class="op"&gt;.&lt;/span&gt;map(&lt;span class="op"&gt;|&lt;/span&gt;f&lt;span class="op"&gt;|&lt;/span&gt; f(x))&lt;span class="op"&gt;.&lt;/span&gt;collect())&lt;/span&gt;
+&lt;span id="cb40-10"&gt;&lt;a href="#cb40-10" aria-hidden="true"&gt;&lt;/a&gt;      &lt;span class="op"&gt;.&lt;/span&gt;collect()&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb40-11"&gt;&lt;a href="#cb40-11" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3 id="notes"&gt;Notes&lt;/h3&gt;
+&lt;p&gt;I didn’t quite explain why we use &lt;code&gt;move |arg|&lt;/code&gt; in our closure. This is because we want to take ownership of the variable supplied to us. Take a look at this example:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb41"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb41-1"&gt;&lt;a href="#cb41-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;let&lt;/span&gt; v &lt;span class="op"&gt;=&lt;/span&gt; add(&lt;span class="dv"&gt;5&lt;/span&gt;)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-2"&gt;&lt;a href="#cb41-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;let&lt;/span&gt; g&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-3"&gt;&lt;a href="#cb41-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-4"&gt;&lt;a href="#cb41-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;let&lt;/span&gt; x &lt;span class="op"&gt;=&lt;/span&gt; &lt;span class="dv"&gt;5&lt;/span&gt;&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-5"&gt;&lt;a href="#cb41-5" aria-hidden="true"&gt;&lt;/a&gt;  g &lt;span class="op"&gt;=&lt;/span&gt; v(x)&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-6"&gt;&lt;a href="#cb41-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb41-7"&gt;&lt;a href="#cb41-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="pp"&gt;println!&lt;/span&gt;(&lt;span class="st"&gt;&amp;quot;{}&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;,&lt;/span&gt; g(&lt;span class="dv"&gt;2&lt;/span&gt;))&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Variable &lt;code&gt;x&lt;/code&gt; goes out of scope before &lt;code&gt;g&lt;/code&gt; can return a concrete value. If we take ownership of &lt;code&gt;x&lt;/code&gt; by &lt;code&gt;move&lt;/code&gt;ing it into our closure, we can expect this to work reliably. In fact, rustc understands this, and forces you to use &lt;code&gt;move&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;This usage of &lt;code&gt;move&lt;/code&gt; is exactly why &lt;strong&gt;a curried function without a return is useless&lt;/strong&gt;. Every variable we pass to our curried function gets moved into its local scope. Playing with these variables cannot cause a change outside this scope. Returning is our only method of interaction with anything beyond this function.&lt;/p&gt;
+&lt;h3 id="conclusion"&gt;Conclusion&lt;/h3&gt;
+&lt;p&gt;Currying may not seem to be all that useful. Curried functions are unwieldy in Rust because the standard library is not built around currying. If you enjoy the possibilities posed by currying, consider taking a look at Haskell or Scheme.&lt;/p&gt;
+&lt;p&gt;My original intention with &lt;a href="https://peppe.rs"&gt;peppe.rs&lt;/a&gt; was to post condensed articles, a micro blog, but this one turned out extra long.&lt;/p&gt;
+&lt;p&gt;Perhaps I should call it a ‘macro’ blog :)&lt;/p&gt;
+&lt;section class="footnotes" role="doc-endnotes"&gt;
+&lt;hr /&gt;
+&lt;ol&gt;
+&lt;li id="fn1" role="doc-endnote"&gt;&lt;p&gt;&lt;a href="https://doc.rust-lang.org/book/ch13-01-closures.html"&gt;https://doc.rust-lang.org/book/ch13-01-closures.html&lt;/a&gt;&lt;a href="#fnref1" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn2" role="doc-endnote"&gt;&lt;p&gt;&lt;a href="https://caniuse.rs"&gt;caniuse.rs&lt;/a&gt; contains an indexed list of features and their status.&lt;a href="#fnref2" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/section&gt;</description>
+<link>https://peppe.rs/posts/auto-currying_rust_functions/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/auto-currying_rust_functions/</guid>
+</item>
+<item>
+<title>ubash uharder uwith uvim</title>
+<description>&lt;p&gt;Bash is tricky, don’t let your editor get in your way. Here’s a couple of neat additions you could make to your &lt;code&gt;vimrc&lt;/code&gt; for a better shell programming experience.&lt;/p&gt;
+&lt;h3 id="man-pages-inside-vim"&gt;Man pages inside vim&lt;/h3&gt;
+&lt;p&gt;Source this script to get started:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;runtime ftplugin/man.vim&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Now, you can open manpages inside vim with &lt;code&gt;:Man&lt;/code&gt;! It adds nicer syntax highlighting and the ability to jump around with &lt;code&gt;Ctrl-]&lt;/code&gt; and &lt;code&gt;Ctrl-T&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;By default, the manpage is opened in a horizontal split, I prefer using a new tab:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;let g:ft_man_open_mode = &amp;#39;tab&amp;#39;&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="scratchpad-to-test-your-commands"&gt;Scratchpad to test your commands&lt;/h3&gt;
+&lt;p&gt;I often test my &lt;code&gt;sed&lt;/code&gt; substitutions, here is a sample from the script used to generate this site:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# a substitution to convert snake_case to Title Case With Spaces
+echo &amp;quot;$1&amp;quot; | sed -E -e &amp;quot;s/\..+$//g&amp;quot;  -e &amp;quot;s/_(.)/ \u\1/g&amp;quot; -e &amp;quot;s/^(.)/\u\1/g&amp;quot;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Instead of dropping into a new shell, just test it out directly from vim!&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Yank the line into a register:&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre&gt;&lt;code&gt;yy&lt;/code&gt;&lt;/pre&gt;
+&lt;ul&gt;
+&lt;li&gt;Paste it into the command-line window:&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre&gt;&lt;code&gt;q:p&lt;/code&gt;&lt;/pre&gt;
+&lt;ul&gt;
+&lt;li&gt;Make edits as required:&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre&gt;&lt;code&gt;syntax off            # previously run commands
+edit index.html       # in a buffer!
+w | so %
+!echo &amp;quot;new_post.md&amp;quot; | sed -E -e &amp;quot;s/\..+$//g&amp;quot;  --snip--
+^--- note the use of &amp;#39;!&amp;#39;&lt;/code&gt;&lt;/pre&gt;
+&lt;ul&gt;
+&lt;li&gt;Hit enter with the cursor on the line containing your command!&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre&gt;&lt;code&gt;$ vim
+New Post         # output
+Press ENTER or type command to continue&lt;/code&gt;&lt;/pre&gt;</description>
+<link>https://peppe.rs/posts/bash_harder_with_vim/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/bash_harder_with_vim/</guid>
+</item>
+<item>
+<title>ubye ubye uBDFs</title>
+<description>&lt;p&gt;Glyph Bitmap Distribution Format is no more, as the creators of &lt;a href="https://pango.org"&gt;Pango&lt;/a&gt;, one of the most widely used text rendering libraries, &lt;a href="https://blogs.gnome.org/mclasen/2019/05/25/pango-future-directions/"&gt;announced&lt;/a&gt; their plans for Pango 1.44.&lt;/p&gt;
+&lt;p&gt;Until recently, Pango used FreeType to draw fonts. They will be moving over to &lt;a href="https://harfbuzz.org"&gt;Harfbuzz&lt;/a&gt;, an evolution of FreeType.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Why?&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;In short, FreeType was hard to work with. It required complex logic, and provided no advantage over Harfbuzz (other than being able to fetch opentype metrics with ease).&lt;/p&gt;
+&lt;p&gt;Upgrading to Pango v1.44 will break your GTK applications (if you use a &lt;code&gt;bdf&lt;/code&gt;/&lt;code&gt;pcf&lt;/code&gt; bitmap font). Harfbuzz &lt;em&gt;does&lt;/em&gt; support bitmap-only OpenType fonts, &lt;code&gt;otb&lt;/code&gt;s. Convert your existing fonts over to &lt;code&gt;otb&lt;/code&gt;s using &lt;a href="https://fontforge.github.io"&gt;FontForge&lt;/a&gt;. It is to be noted that applications such as &lt;code&gt;xterm&lt;/code&gt; and &lt;code&gt;rxvt&lt;/code&gt; use &lt;code&gt;xft&lt;/code&gt; (X FreeType) to render fonts, and will remain unaffected by the update.&lt;/p&gt;
+&lt;p&gt;Both &lt;a href="https://github.com/nerdypepper/scientifica"&gt;scientifica&lt;/a&gt; and &lt;a href="https://github.com/nerdypepper/curie"&gt;curie&lt;/a&gt; will soon ship with bitmap-only OpenType font formats.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/bye_bye_BDFs/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/bye_bye_BDFs/</guid>
+</item>
+<item>
+<title>ucall uto uARMs</title>
+<description>&lt;p&gt;My 4th semester involves ARM programming. And proprietary tooling (Keil C). But we don’t do that here.&lt;/p&gt;
+&lt;h3 id="building"&gt;Building&lt;/h3&gt;
+&lt;p&gt;Assembling and linking ARM binaries on non-ARM architecture devices is fairly trivial. I went along with the GNU cross bare metal toolchain binutils, which provides &lt;code&gt;arm-as&lt;/code&gt; and &lt;code&gt;arm-ld&lt;/code&gt; (among a bunch of other utils that I don’t care about for now).&lt;/p&gt;
+&lt;p&gt;Assemble &lt;code&gt;.s&lt;/code&gt; files with:&lt;/p&gt;
+&lt;pre class="shell"&gt;&lt;code&gt;arm-none-eabi-as main.s -g -march=armv8.1-a -o main.out&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The &lt;code&gt;-g&lt;/code&gt; flag generates extra debugging information that &lt;code&gt;gdb&lt;/code&gt; picks up. The &lt;code&gt;-march&lt;/code&gt; option establishes target architecture.&lt;/p&gt;
+&lt;p&gt;Link &lt;code&gt;.o&lt;/code&gt; files with:&lt;/p&gt;
+&lt;pre class="shell"&gt;&lt;code&gt;arm-none-eabi-ld main.out -o main&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="running-and-debugging"&gt;Running (and Debugging)&lt;/h3&gt;
+&lt;p&gt;Things get interesting here. &lt;code&gt;gdb&lt;/code&gt; on your x86 machine cannot read nor execute binaries compiled for ARM. So, we simulate an ARM processor using &lt;code&gt;qemu&lt;/code&gt;. Now qemu allows you to run &lt;code&gt;gdbserver&lt;/code&gt; on startup. Connecting our local &lt;code&gt;gdb&lt;/code&gt; instance to &lt;code&gt;gdbserver&lt;/code&gt; gives us a view into the program’s execution. Easy!&lt;/p&gt;
+&lt;p&gt;Run &lt;code&gt;qemu&lt;/code&gt;, with &lt;code&gt;gdbserver&lt;/code&gt; on port &lt;code&gt;1234&lt;/code&gt;, with our ARM binary, &lt;code&gt;main&lt;/code&gt;:&lt;/p&gt;
+&lt;pre class="shell"&gt;&lt;code&gt;qemu-arm -singlestep -g 1234 main&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Start up &lt;code&gt;gdb&lt;/code&gt; on your machine, and connect to &lt;code&gt;qemu&lt;/code&gt;’s &lt;code&gt;gdbserver&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;(gdb) set architecture armv8-a
+(gdb) target remote localhost:1234
+(gdb) file main
+Reading symbols from main...  # yay!&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="gdb-enhanced"&gt;GDB Enhanced&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;gdb&lt;/code&gt; is cool, but it’s not nearly as comfortable as well fleshed out emulators/IDEs like Keil. Watching registers, CPSR and memory chunks update &lt;em&gt;is&lt;/em&gt; pretty fun.&lt;/p&gt;
+&lt;p&gt;I came across &lt;code&gt;gdb&lt;/code&gt;’s TUI mode (hit &lt;code&gt;C-x C-a&lt;/code&gt; or type &lt;code&gt;tui enable&lt;/code&gt; at the prompt). TUI mode is a godsend. It highlights the current line of execution, shows you disassembly outputs, updated registers, active breakpoints and more.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;But&lt;/em&gt;, it is an absolute eyesore.&lt;/p&gt;
+&lt;p&gt;Say hello to &lt;a href="https://github.com/hugsy/gef"&gt;GEF&lt;/a&gt;! “GDB Enhanced Features” teaches our old dog some cool new tricks. Here are some additions that made my ARM debugging experience loads better:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Memory watches&lt;/li&gt;
+&lt;li&gt;Register watches, with up to 7 levels of deref (overkill, I agree)&lt;/li&gt;
+&lt;li&gt;Stack tracing&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;And it’s pretty! See for yourself:&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://u.peppe.rs/wq.png"&gt;&lt;img src="https://u.peppe.rs/wq.png" /&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="editing"&gt;Editing&lt;/h3&gt;
+&lt;p&gt;Vim, with &lt;code&gt;syntax off&lt;/code&gt; because it dosen’t handle GNU ARM syntax too well.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/call_to_ARMs/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/call_to_ARMs/</guid>
+</item>
+<item>
+<title>ucolor uconundrum</title>
+<description>&lt;p&gt;This piece aims to highlight (pun intended) some of the reasons behind my &lt;a href="https://u.peppe.rs/bF.png"&gt;color free&lt;/a&gt; editor setup.&lt;/p&gt;
+&lt;p&gt;Imagine highlighting an entire book because &lt;em&gt;all&lt;/em&gt; of it is important. That is exactly what (most) syntax highlighting does. It is difficult for the human eye to filter out noise in rainbow barf. Use color to draw attention, not diverge it.&lt;/p&gt;
+&lt;p&gt;At the same time, a book devoid of color is &lt;em&gt;boring!&lt;/em&gt; What is the takeaway from this 10 line paragraph? What are the technical terms used?&lt;/p&gt;
+&lt;p&gt;Prose and code are certainly different, but the fickle minded human eye is the same. The eye constantly looks for a frame of reference, a focal point. It grows tired when it can’t find one.&lt;/p&gt;
+&lt;p&gt;The following comparison does a better job of explaining (none, ample and over-the-top highlighting, from left to right):&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://u.peppe.rs/lt.png"&gt;&lt;img src="https://u.peppe.rs/lt.png" /&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;Without highlighting (far left), it is hard to differentiate between comments and code! The florid color scheme (far right) is no good either, it contains too many attention grabbers. The center sample is a healthy balance of both. Function calls and constants stand out, and repetitive keywords and other noise (&lt;code&gt;let&lt;/code&gt;, &lt;code&gt;as&lt;/code&gt;) are mildly dimmed out. Comments and non-code text (sign column, status text) are dimmed further.&lt;/p&gt;
+&lt;p&gt;I’ll stop myself before I rant about color contrast and combinations.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/color_conundrum/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/color_conundrum/</guid>
+</item>
+<item>
+<title>ufont usize ufallacies</title>
+<description>&lt;p&gt;I am not an expert with fonts, but I do have some experience &lt;a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"&gt;&lt;sup&gt;1&lt;/sup&gt;&lt;/a&gt;, and common sense. This post aims to debunk some misconceptions about font sizes!&lt;/p&gt;
+&lt;p&gt;11 px on your display is &lt;em&gt;probably not&lt;/em&gt; 11 px on my display. Let’s do some quick math. I have two displays, 1366x768 @ 21" and another with 1920x1080 @ 13", call them &lt;code&gt;A&lt;/code&gt; and &lt;code&gt;B&lt;/code&gt; for now.&lt;/p&gt;
+&lt;p&gt;Display &lt;code&gt;A&lt;/code&gt; has 1,049,088 pixels. A pixel is a square, of side say, &lt;code&gt;s&lt;/code&gt; cm. The total area covered by my 21" display is about 1,066 cm^2 (41x26). Thus,&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;Display A
+Dimensions: 1366x768 @ 21&amp;quot; (41x26 sq. cm)
+1,049,088 s^2 = 1066
+            s = 0.0318 cm (side of a pixel on Display A)&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Bear with me, as I repeat the number crunching for Display &lt;code&gt;B&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;Display B
+Dimensions: 1920x1080 @ 13&amp;quot; (29.5x16.5 sq. cm)
+2,073,600 s^2 = 486.75
+            s = 0.0153 cm (side of a pixel on Display B)&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The width of a pixel on Display &lt;code&gt;A&lt;/code&gt; is &lt;em&gt;double&lt;/em&gt; the width of a pixel on Display &lt;code&gt;B&lt;/code&gt;. The area occupied by a pixel on Display &lt;code&gt;A&lt;/code&gt; is &lt;em&gt;4 times&lt;/em&gt; the area occupied by a pixel on Display &lt;code&gt;B&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;The size of a pixel varies from display to display!&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;A 5x11 bitmap font on Display &lt;code&gt;A&lt;/code&gt; would be around 4 mm tall whereas the same bitmap font on Display &lt;code&gt;B&lt;/code&gt; would be around 1.9 mm tall. A 11 px tall character on &lt;code&gt;B&lt;/code&gt; is visually equivalent to a 5 px character on &lt;code&gt;A&lt;/code&gt;. When you view a screenshot of Display &lt;code&gt;A&lt;/code&gt; on Display &lt;code&gt;B&lt;/code&gt;, the contents are shrunk down by a factor of 2!&lt;/p&gt;
+&lt;p&gt;So screen resolution is not enough, how else do we measure size? Pixel Density! Keen readers will realize that the 5^th grade math problem we solved up there showcases pixel density, or, pixels per cm (PPCM). Usually we deal with pixels per inch (PPI).&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Note:&lt;/strong&gt; PPI is not to be confused with DPI &lt;a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"&gt;&lt;sup&gt;2&lt;/sup&gt;&lt;/a&gt; (dots per inch). DPI is defined for printers.&lt;/p&gt;
+&lt;p&gt;In our example, &lt;code&gt;A&lt;/code&gt; is a 75 ppi display and &lt;code&gt;B&lt;/code&gt; is around 165 ppi &lt;a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"&gt;&lt;sup&gt;3&lt;/sup&gt;&lt;/a&gt;. A low ppi display appears to be ‘pixelated’, because the pixels are more prominent, much like Display &lt;code&gt;A&lt;/code&gt;. A higher ppi usually means you can view larger images and render crispier fonts. The average desktop display can stuff 100-200 pixels per inch. Smart phones usually fall into the 400-600 ppi (XXXHDPI) category. The human eye fails to differentiate detail past 300 ppi.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;So … streaming an 8K video on a 60" TV provides the same clarity as a HD video on a smart phone?&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;Absolutely. Well, clarity is subjective, but the amount of detail you can discern on mobile displays has always been limited. Salty consumers of the Xperia 1 &lt;a href="#fn4" class="footnote-ref" id="fnref4" role="doc-noteref"&gt;&lt;sup&gt;4&lt;/sup&gt;&lt;/a&gt; will say otherwise.&lt;/p&gt;
+&lt;p&gt;Maybe I will talk about font rendering in another post, but thats all for now. Don’t judge a font size by its screenshot.&lt;/p&gt;
+&lt;section class="footnotes" role="doc-endnotes"&gt;
+&lt;hr /&gt;
+&lt;ol&gt;
+&lt;li id="fn1" role="doc-endnote"&gt;&lt;p&gt;https://github.com/nerdypepper/scientifica&lt;a href="#fnref1" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn2" role="doc-endnote"&gt;&lt;p&gt;https://en.wikipedia.org/wiki/Dots_per_inch&lt;a href="#fnref2" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn3" role="doc-endnote"&gt;&lt;p&gt;https://www.sven.de/dpi/&lt;a href="#fnref3" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn4" role="doc-endnote"&gt;&lt;p&gt;https://en.wikipedia.org/wiki/Sony_Xperia_1&lt;a href="#fnref4" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/section&gt;</description>
+<link>https://peppe.rs/posts/font_size_fallacies/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/font_size_fallacies/</guid>
+</item>
+<item>
+<title>uget ubetter uat uyanking uand uputting uin uvim</title>
+<description>&lt;p&gt;a couple of nifty tricks to help you copy-paste better:&lt;/p&gt;
+&lt;ol type="1"&gt;
+&lt;li&gt;&lt;p&gt;reselecting previously selected text (i use this to fix botched selections):&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;gv  &amp;quot; :h gv for more
+    &amp;quot; you can use `o` in visual mode to go to the `Other` end of the selection
+    &amp;quot; use a motion to fix the selection&lt;/code&gt;&lt;/pre&gt;&lt;/li&gt;
+&lt;li&gt;&lt;p&gt;reselecting previously yanked text:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;`[v`]
+`[         &amp;quot; marks the beginning of the previously yanked text   :h `[
+`]         &amp;quot; marks the end                                       :h `]
+ v         &amp;quot; visual select everything in between
+
+nnoremap gb `[v`]    &amp;quot; &amp;quot;a quick map to perform the above&lt;/code&gt;&lt;/pre&gt;&lt;/li&gt;
+&lt;li&gt;&lt;p&gt;pasting and indenting text (in one go):&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;]p   &amp;quot; put (p) and adjust indent to current line
+]P   &amp;quot; put the text before the cursor (P) and adjust indent to current line&lt;/code&gt;&lt;/pre&gt;&lt;/li&gt;
+&lt;/ol&gt;</description>
+<link>https://peppe.rs/posts/get_better_at_yanking_and_putting_in_vim/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/get_better_at_yanking_and_putting_in_vim/</guid>
+</item>
+<item>
+<title>uhold uposition!</title>
+<description>&lt;p&gt;Often times, when I run a vim command that makes “big” changes to a file (a macro or a &lt;code&gt;:vimgrep&lt;/code&gt; command) I lose my original position and feel disoriented.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;Save position with &lt;code&gt;winsaveview()&lt;/code&gt;!&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;The &lt;code&gt;winsaveview()&lt;/code&gt; command returns a &lt;code&gt;Dictionary&lt;/code&gt; that contains information about the view of the current window. This includes the cursor line number, cursor coloumn, the top most line in the window and a couple of other values, none of which concern us.&lt;/p&gt;
+&lt;p&gt;Before running our command (one that jumps around the buffer, a lot), we save our view, and restore it once its done, with &lt;code&gt;winrestview&lt;/code&gt;.&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;let view = winsaveview()
+s/\s\+$//gc              &amp;quot; find and (confirm) replace trailing blanks
+winrestview(view)        &amp;quot; restore our original view!&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;It might seem a little overkill in the above example, just use `` (double backticks) instead, but it comes in handy when you run your file through heavier filtering.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/hold_position!/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/hold_position!/</guid>
+</item>
+<item>
+<title>umy usetup</title>
+<description>&lt;p&gt;Decided to do one of these because everyone does one of these.&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/Hb.png" /&gt;&lt;/p&gt;
+&lt;p&gt;My entire setup is managed with GNU &lt;code&gt;stow&lt;/code&gt;, making it easier to replicate on fresh installations. You can find my configuration files on &lt;a href="https://github.com/nerdypepper"&gt;GitHub&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;I run Void Linux (glibc) on my &lt;a href="https://store.hp.com/us/en/mdp/laptops/envy-13"&gt;HP Envy 13" (2018)&lt;/a&gt;. To keep things simple, I run a raw X session with &lt;code&gt;2bwm&lt;/code&gt; as my window manager, along with &lt;code&gt;dunst&lt;/code&gt; (notification daemon) and Sam’s &lt;a href="https://github.com/sdhand/compton"&gt;&lt;code&gt;compton&lt;/code&gt;&lt;/a&gt; (compositor) fork.&lt;/p&gt;
+&lt;p&gt;I am a fan of GNU tools, so I use &lt;code&gt;bash&lt;/code&gt; as my shell, and &lt;code&gt;coreutils&lt;/code&gt; to manage files, archives, strings, paths etc. I edit files with &lt;code&gt;vim&lt;/code&gt;, chat with &lt;code&gt;weechat&lt;/code&gt;, listen to music with &lt;code&gt;cmus&lt;/code&gt;, monitor processes with &lt;code&gt;htop&lt;/code&gt;, manage sessions with &lt;code&gt;tmux&lt;/code&gt;, read pdfs in &lt;code&gt;zathura&lt;/code&gt;. I rarely ever leave the comfort of my terminal emulator, &lt;code&gt;urxvt&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Most of my academic typesetting is done with TeX, and compiled with &lt;code&gt;xelatex&lt;/code&gt;. Other &lt;em&gt;fun&lt;/em&gt; documents are made with GIMP :).&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/my_setup/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/my_setup/</guid>
+</item>
+<item>
+<title>uonivim usucks</title>
+<description>&lt;p&gt;&lt;a href="https://v2.onivim.io"&gt;Onivim&lt;/a&gt; is a ‘modern modal editor’, combining fancy interface and language features with vim-style modal editing. What’s wrong you ask?&lt;/p&gt;
+&lt;p&gt;Apart from &lt;a href="https://github.com/onivim/oni2/issues/550"&gt;buggy syntax highlighting&lt;/a&gt;, &lt;a href="https://github.com/onivim/oni2/issues/519"&gt;broken scrolling&lt;/a&gt; and &lt;a href="https://github.com/onivim/oni2/issues?q=is%3Aissue+label%3A%22daily+editor+blocker%22+is%3Aopen"&gt;others&lt;/a&gt;, Onivim is &lt;strong&gt;proprietary&lt;/strong&gt; software. It is licensed under a commercial &lt;a href="https://github.com/onivim/oni1/blob/master/Outrun-Labs-EULA-v1.1.md"&gt;end user agreement license&lt;/a&gt;, which prohibits redistribution in both object code and source code formats.&lt;/p&gt;
+&lt;p&gt;Onivim’s core editor logic (bits that belong to vim), have been separated from the interface, into &lt;a href="https://github.com/onivim/libvim"&gt;libvim&lt;/a&gt;. libvim is licensed under MIT, which means, this ‘extension’ of vim is perfectly in adherence to &lt;a href="http://vimdoc.sourceforge.net/htmldoc/uganda.html#license"&gt;vim’s license text&lt;/a&gt;! Outrun Labs are exploiting this loophole (distributing vim as a library) to commercialize Onivim.&lt;/p&gt;
+&lt;p&gt;Onivim’s source code is available on &lt;a href="https://github.com/onivim/oni2"&gt;GitHub&lt;/a&gt;. They do mention that the source code trickles down to the &lt;a href="https://github.com/onivim/oni2-mit"&gt;oni2-mit&lt;/a&gt; repository, which (not yet) contains MIT-licensed code, &lt;strong&gt;18 months&lt;/strong&gt; after each commit to the original repository.&lt;/p&gt;
+&lt;p&gt;Want to contribute to Onivim? Don’t. They make a profit out of your contributions. Currently, Onivim is priced at $19.99, ‘pre-alpha’ pricing which is 80% off the final price! If you are on the lookout for an editor, I would suggest using &lt;a href="https://vim.org"&gt;Vim&lt;/a&gt;, charity ware that actually works, and costs $100 lesser.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/onivim_sucks/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/onivim_sucks/</guid>
+</item>
+<item>
+<title>upixel uart uin uGIMP</title>
+<description>&lt;p&gt;I’ve always been an admirer of pixel art, because of it’s simplicity and it’s resemblance to bitmap font design. Recently, I decided to take the dive and make some art of my own.&lt;/p&gt;
+&lt;p&gt;I used GIMP because I am fairly familiar with it. Aseprite seems to be the editor of choice for animated pixel art though.&lt;/p&gt;
+&lt;h3 id="setting-up-the-canvas"&gt;Setting up the canvas&lt;/h3&gt;
+&lt;p&gt;Picking a canvas size is daunting. Too small, and you won’t be able to fit in enough detail to make a legible piece. Too big and you’ve got too many pixels to work with!&lt;/p&gt;
+&lt;p&gt;I would suggest starting out with anywhere between 100x100 and 200x200. &lt;a href="https://u.peppe.rs/u9.png"&gt;Here’s&lt;/a&gt; a sample configuration.&lt;/p&gt;
+&lt;p&gt;Sometimes I use a 10x10 grid, &lt;code&gt;View &amp;gt; Show Grid&lt;/code&gt; and &lt;code&gt;Edit &amp;gt; Preferences &amp;gt; Default Grid &amp;gt; Spacing&lt;/code&gt;, but that can get jarring, so I throw down a couple of guides, drag right or down from the left or top gutters for vertical and horizontal guides respectively.&lt;/p&gt;
+&lt;h3 id="choosing-a-brush"&gt;Choosing a Brush&lt;/h3&gt;
+&lt;p&gt;The most important part of our setup is the brush. Use the Pencil Tool (&lt;code&gt;n&lt;/code&gt; on the keyboard) for hard edge drawings. Here’s a small comparison if you don’t know the difference between a hard edge and a soft edge:&lt;/p&gt;
+&lt;figure&gt;
+&lt;img src="https://u.peppe.rs/kz.png" alt="Hard edge vs Soft Edge" /&gt;&lt;figcaption aria-hidden="true"&gt;Hard edge vs Soft Edge&lt;/figcaption&gt;
+&lt;/figure&gt;
+&lt;p&gt;I turn the size down all the way to 1 (&lt;code&gt;[&lt;/code&gt; on the keyboard). Set &lt;code&gt;Dynamics&lt;/code&gt; off. &lt;a href="https://u.peppe.rs/Fs.png"&gt;Here’s&lt;/a&gt; a sample brush configuration.&lt;/p&gt;
+&lt;h3 id="laying-down-the-pixels"&gt;Laying down the pixels!&lt;/h3&gt;
+&lt;p&gt;With the boring stuff out of the way, we can start with our piece. I usually follow a three step process:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;draw a rough outline&lt;/li&gt;
+&lt;li&gt;fill in the shadows&lt;/li&gt;
+&lt;li&gt;add highlights&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;But this process is better explained with an example: an onigiri. Let us start off with a 100x100 canvas.&lt;/p&gt;
+&lt;h4 id="drawing-the-outline"&gt;Drawing the outline&lt;/h4&gt;
+&lt;p&gt;For the most part, our figure will be symmetric. If you are on GIMP 2.10+, you can take advantage of the Symmetry Painting feature. Go ahead and enable vertical symmetry, &lt;code&gt;Window &amp;gt; Dockable Dialogs &amp;gt; Symmetry Painting&lt;/code&gt; and &lt;code&gt;Symmetry Painting &amp;gt; Symmetry &amp;gt; Mirror &amp;gt; Vertical&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;If you are running an older version of GIMP, draw in the left side, duplicate the layer, flip it horizontally, and merge it with the original.&lt;/p&gt;
+&lt;p&gt;Your outline might look something like this:&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/mn.png" /&gt;&lt;/p&gt;
+&lt;p&gt;Go ahead and fill it in with the fill tool (&lt;code&gt;Shift + b&lt;/code&gt; on the keyboard), add in some seaweed as well, preferably on a different layer. You can toggle symmetry on and off to save yourself some time.&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/xu.png" /&gt;&lt;/p&gt;
+&lt;h4 id="shadows"&gt;Shadows&lt;/h4&gt;
+&lt;p&gt;For now, let us focus on the shadows on the object itself, we’ll come back to the shadows cast by the object on the surface later.&lt;/p&gt;
+&lt;p&gt;Shadows on any surface always follow the shape of the surface. A spherical onigiri would have a circular shadow:&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/FU.png" /&gt;&lt;/p&gt;
+&lt;p&gt;A couple of noticeable changes:&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Layers&lt;/strong&gt;: The layer containing the seaweed has been hidden.&lt;br /&gt;
+&lt;strong&gt;Color&lt;/strong&gt;: The color of the shadow is just a slightly lighter version of the original object (reduce the Value on the HSV scale).&lt;br /&gt;
+&lt;strong&gt;Area&lt;/strong&gt;: The shadow does not go all the way (notice the bottom edges).&lt;/p&gt;
+&lt;p&gt;The shadow does not go all the way because we will be filling in that area with another, darker shadow! An image might explain better:&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/Br.png" /&gt;&lt;/p&gt;
+&lt;p&gt;To emulate soft lights, reduce the value by 2 to 3 points every iteration. Notice how area &lt;code&gt;1&lt;/code&gt; is much larger than area &lt;code&gt;4&lt;/code&gt;. This is because an onigiri resembles a bottom heavy oblate spheroid, a sphere that is slightly fatter around the lower bottom, and areas &lt;code&gt;1&lt;/code&gt; and &lt;code&gt;2&lt;/code&gt; catch more light than areas &lt;code&gt;3&lt;/code&gt; and &lt;code&gt;4&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Do the same with the seaweed. The seaweed, being a smaller, flatter object, doesn’t cast much of a shadow, so stop with 1 or 2 iterations of the gradient:&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/T3.png" /&gt;&lt;/p&gt;
+&lt;p&gt;We’re getting there!&lt;/p&gt;
+&lt;h4 id="highlights"&gt;Highlights&lt;/h4&gt;
+&lt;p&gt;This step handles the details on the strongly illuminated portions of the object. Seaweed is a bit glossy, lighten the edges to make it seem shiny. The rice is not as shiny, but it does form an uneven surface. Add in some shadows to promote the idea of rice grains. Here is the finished result:&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/VE.png" /&gt;&lt;/p&gt;
+&lt;h3 id="finishing-touches"&gt;Finishing Touches&lt;/h3&gt;
+&lt;p&gt;Some color correction and &lt;code&gt;a e s t h e t i c&lt;/code&gt; Japanese text later, our piece is complete!&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/cn.png" /&gt;&lt;/p&gt;
+&lt;p&gt;Hold on, why is it so tiny? Well, that’s because our canvas was 100x100, head over to &lt;code&gt;Image &amp;gt; Scale Image&lt;/code&gt;, set &lt;code&gt;Quality &amp;gt; Interpolation&lt;/code&gt; to &lt;code&gt;None&lt;/code&gt; and scale it up to 700x700, et voilà!&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://u.peppe.rs/CH.png" /&gt;&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/pixel_art_in_GIMP/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/pixel_art_in_GIMP/</guid>
+</item>
+<item>
+<title>urapid urefactoring uwith uvim</title>
+<description>&lt;p&gt;Last weekend, I was tasked with refactoring the 96 unit tests on &lt;a href="https://github.com/ruma/ruma-events/pull/70"&gt;ruma-events&lt;/a&gt; to use strictly typed json objects using &lt;code&gt;serde_json::json!&lt;/code&gt; instead of raw strings. It was rather painless thanks to vim :)&lt;/p&gt;
+&lt;p&gt;Here’s a small sample of what had to be done (note the lines prefixed with the arrow):&lt;/p&gt;
+&lt;div class="sourceCode" id="cb1"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb1-1"&gt;&lt;a href="#cb1-1" aria-hidden="true"&gt;&lt;/a&gt;→ &lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;serde_json::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;from_str&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-2"&gt;&lt;a href="#cb1-2" aria-hidden="true"&gt;&lt;/a&gt;  &lt;/span&gt;
+&lt;span id="cb1-3"&gt;&lt;a href="#cb1-3" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="at"&gt;#[&lt;/span&gt;test&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-4"&gt;&lt;a href="#cb1-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;fn&lt;/span&gt; deserialize() &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-5"&gt;&lt;a href="#cb1-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="pp"&gt;assert_eq!&lt;/span&gt;(&lt;/span&gt;
+&lt;span id="cb1-6"&gt;&lt;a href="#cb1-6" aria-hidden="true"&gt;&lt;/a&gt;→       &lt;span class="pp"&gt;from_str::&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Action&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;(&lt;span class="st"&gt;r#&amp;quot;{&amp;quot;set_tweak&amp;quot;: &amp;quot;highlight&amp;quot;}&amp;quot;#&lt;/span&gt;)&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-7"&gt;&lt;a href="#cb1-7" aria-hidden="true"&gt;&lt;/a&gt;        &lt;span class="pp"&gt;Action::&lt;/span&gt;SetTweak(&lt;span class="pp"&gt;Tweak::&lt;/span&gt;Highlight &lt;span class="op"&gt;{&lt;/span&gt; value&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="cn"&gt;true&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;)&lt;/span&gt;
+&lt;span id="cb1-8"&gt;&lt;a href="#cb1-8" aria-hidden="true"&gt;&lt;/a&gt;        )&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-9"&gt;&lt;a href="#cb1-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;had to be converted to:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb2"&gt;&lt;pre class="sourceCode rust"&gt;&lt;code class="sourceCode rust"&gt;&lt;span id="cb2-1"&gt;&lt;a href="#cb2-1" aria-hidden="true"&gt;&lt;/a&gt;→ &lt;span class="kw"&gt;use&lt;/span&gt; &lt;span class="pp"&gt;serde_json::&lt;/span&gt;&lt;span class="op"&gt;{&lt;/span&gt;from_value&lt;span class="op"&gt;};&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-2"&gt;&lt;a href="#cb2-2" aria-hidden="true"&gt;&lt;/a&gt;  &lt;/span&gt;
+&lt;span id="cb2-3"&gt;&lt;a href="#cb2-3" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="at"&gt;#[&lt;/span&gt;test&lt;span class="at"&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-4"&gt;&lt;a href="#cb2-4" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="kw"&gt;fn&lt;/span&gt; deserialize() &lt;span class="op"&gt;{&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-5"&gt;&lt;a href="#cb2-5" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="pp"&gt;assert_eq!&lt;/span&gt;(&lt;/span&gt;
+&lt;span id="cb2-6"&gt;&lt;a href="#cb2-6" aria-hidden="true"&gt;&lt;/a&gt;→       &lt;span class="pp"&gt;from_value::&lt;/span&gt;&lt;span class="op"&gt;&amp;lt;&lt;/span&gt;Action&lt;span class="op"&gt;&amp;gt;&lt;/span&gt;(&lt;span class="pp"&gt;json!&lt;/span&gt;(&lt;span class="op"&gt;{&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;set_tweak&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="st"&gt;&amp;quot;highlight&amp;quot;&lt;/span&gt;&lt;span class="op"&gt;}&lt;/span&gt;))&lt;span class="op"&gt;,&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-7"&gt;&lt;a href="#cb2-7" aria-hidden="true"&gt;&lt;/a&gt;        &lt;span class="pp"&gt;Action::&lt;/span&gt;SetTweak(&lt;span class="pp"&gt;Tweak::&lt;/span&gt;Highlight &lt;span class="op"&gt;{&lt;/span&gt; value&lt;span class="op"&gt;:&lt;/span&gt; &lt;span class="cn"&gt;true&lt;/span&gt; &lt;span class="op"&gt;}&lt;/span&gt;)&lt;/span&gt;
+&lt;span id="cb2-8"&gt;&lt;a href="#cb2-8" aria-hidden="true"&gt;&lt;/a&gt;        )&lt;span class="op"&gt;;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-9"&gt;&lt;a href="#cb2-9" aria-hidden="true"&gt;&lt;/a&gt;  &lt;span class="op"&gt;}&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3 id="the-arglist"&gt;The arglist&lt;/h3&gt;
+&lt;p&gt;For the initial pass, I decided to handle imports, this was a simple find and replace operation, done to all the files containing tests. Luckily, modules (and therefore files) containing tests in Rust are annotated with the &lt;code&gt;#[cfg(test)]&lt;/code&gt; attribute. I opened all such files:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb3"&gt;&lt;pre class="sourceCode bash"&gt;&lt;code class="sourceCode bash"&gt;&lt;span id="cb3-1"&gt;&lt;a href="#cb3-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;# `grep -l pattern files` lists all the files&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb3-2"&gt;&lt;a href="#cb3-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;#  matching the pattern&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb3-3"&gt;&lt;a href="#cb3-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb3-4"&gt;&lt;a href="#cb3-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="ex"&gt;vim&lt;/span&gt; &lt;span class="va"&gt;$(&lt;/span&gt;&lt;span class="fu"&gt;grep&lt;/span&gt; -l &lt;span class="st"&gt;&amp;#39;cfg\(test\)&amp;#39;&lt;/span&gt; ./**/*.rs&lt;span class="va"&gt;)&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb3-5"&gt;&lt;a href="#cb3-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb3-6"&gt;&lt;a href="#cb3-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;# expands to something like:&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb3-7"&gt;&lt;a href="#cb3-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="ex"&gt;vim&lt;/span&gt; push_rules.rs room/member.rs key/verification/lib.rs&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Starting vim with more than one file at the shell prompt populates the arglist. Hit &lt;code&gt;:args&lt;/code&gt; to see the list of files currently ready to edit. The square [brackets] indicate the current file. Navigate through the arglist with &lt;code&gt;:next&lt;/code&gt; and &lt;code&gt;:prev&lt;/code&gt;. I use tpope’s vim-unimpaired &lt;a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"&gt;&lt;sup&gt;1&lt;/sup&gt;&lt;/a&gt;, which adds &lt;code&gt;]a&lt;/code&gt; and &lt;code&gt;[a&lt;/code&gt;, mapped to &lt;code&gt;:next&lt;/code&gt; and &lt;code&gt;:prev&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;All that’s left to do is the find and replace, for which we will be using vim’s &lt;code&gt;argdo&lt;/code&gt;, applying a substitution to every file in the arglist:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;:argdo s/from_str/from_value/g&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="the-quickfix-list"&gt;The quickfix list&lt;/h3&gt;
+&lt;p&gt;Next up, replacing &lt;code&gt;r#" ... "#&lt;/code&gt; with &lt;code&gt;json!( ... )&lt;/code&gt;. I couldn’t search and replace that trivially, so I went with a macro call &lt;a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"&gt;&lt;sup&gt;2&lt;/sup&gt;&lt;/a&gt; instead, starting with the cursor on ‘r’, represented by the caret, in my attempt to breakdown the process:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;BUFFER:    r#&amp;quot; ... &amp;quot;#;
+           ^
+
+ACTION:    vllsjson!(
+
+BUFFER     json!( ... &amp;quot;#;
+                ^
+
+ACTION:    &amp;lt;esc&amp;gt;$F#
+
+BUFFER:    json!( ... &amp;quot;#;
+                       ^
+
+ACTION:    vhs)&amp;lt;esc&amp;gt;
+
+BUFFER:    json!( ... );&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Here’s the recorded &lt;a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"&gt;&lt;sup&gt;3&lt;/sup&gt;&lt;/a&gt; macro in all its glory: &lt;code&gt;vllsjson!(&amp;lt;esc&amp;gt;$F#vhs)&amp;lt;esc&amp;gt;&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Great! So now we just go ahead, find every occurrence of &lt;code&gt;r#&lt;/code&gt; and apply the macro right? Unfortunately, there were more than a few occurrences of raw strings that had to stay raw strings. Enter, the quickfix list.&lt;/p&gt;
+&lt;p&gt;The idea behind the quickfix list is to jump from one position in a file to another (maybe in a different file), much like how the arglist lets you jump from one file to another.&lt;/p&gt;
+&lt;p&gt;One of the easiest ways to populate this list with a bunch of positions is to use &lt;code&gt;vimgrep&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# basic usage
+:vimgrep pattern files
+
+# search for raw strings
+:vimgrep &amp;#39;r#&amp;#39; ./**/*.rs&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Like &lt;code&gt;:next&lt;/code&gt; and &lt;code&gt;:prev&lt;/code&gt;, you can navigate the quickfix list with &lt;code&gt;:cnext&lt;/code&gt; and &lt;code&gt;:cprev&lt;/code&gt;. Every time you move up or down the list, vim indicates your index:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;(1 of 131): r#&amp;quot;{&amp;quot;set_tweak&amp;quot;: &amp;quot;highlight&amp;quot;}&amp;quot;#;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;And just like &lt;code&gt;argdo&lt;/code&gt;, you can &lt;code&gt;cdo&lt;/code&gt; to apply commands to &lt;em&gt;every&lt;/em&gt; match in the quickfix list:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;:cdo norm! @q&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;But, I had to manually pick out matches, and it involved some button mashing.&lt;/p&gt;
+&lt;h3 id="external-filtering"&gt;External Filtering&lt;/h3&gt;
+&lt;p&gt;Some code reviews later, I was asked to format all the json inside the &lt;code&gt;json!&lt;/code&gt; macro. All you have to do is pass a visual selection through a pretty json printer. Select the range to be formatted in visual mode, and hit &lt;code&gt;:&lt;/code&gt;, you will notice the command line displaying what seems to be gibberish:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;:&amp;#39;&amp;lt;,&amp;#39;&amp;gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;'&amp;lt;&lt;/code&gt; and &lt;code&gt;'&amp;gt;&lt;/code&gt; are &lt;em&gt;marks&lt;/em&gt; &lt;a href="#fn4" class="footnote-ref" id="fnref4" role="doc-noteref"&gt;&lt;sup&gt;4&lt;/sup&gt;&lt;/a&gt;. More specifically, they are marks that vim sets automatically every time you make a visual selection, denoting the start and end of the selection.&lt;/p&gt;
+&lt;p&gt;A range is one or more line specifiers separated by a &lt;code&gt;,&lt;/code&gt;:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;:1,7       lines 1 through 7
+:32        just line 32
+:.         the current line
+:.,$       the current line to the last line
+:&amp;#39;a,&amp;#39;b     mark &amp;#39;a&amp;#39; to mark &amp;#39;b&amp;#39;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Most &lt;code&gt;:&lt;/code&gt; commands can be prefixed by ranges. &lt;code&gt;:help usr_10.txt&lt;/code&gt; for more on that.&lt;/p&gt;
+&lt;p&gt;Alright, lets pass json through &lt;code&gt;python -m json.tool&lt;/code&gt;, a json formatter that accepts &lt;code&gt;stdin&lt;/code&gt; (note the use of &lt;code&gt;!&lt;/code&gt; to make use of an external program):&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;:&amp;#39;&amp;lt;,&amp;#39;&amp;gt;!python -m json.tool&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Unfortunately that didn’t quite work for me because the range included some non-json text as well, a mix of regex and macros helped fix that. I think you get the drift.&lt;/p&gt;
+&lt;p&gt;Another fun filter I use from time to time is &lt;code&gt;:!sort&lt;/code&gt;, to sort css attributes, or &lt;code&gt;:!uniq&lt;/code&gt; to remove repeated imports.&lt;/p&gt;
+&lt;section class="footnotes" role="doc-endnotes"&gt;
+&lt;hr /&gt;
+&lt;ol&gt;
+&lt;li id="fn1" role="doc-endnote"&gt;&lt;p&gt;https://github.com/tpope/vim-unimpaired It also handles various other mappings, &lt;code&gt;]q&lt;/code&gt; and &lt;code&gt;[q&lt;/code&gt; to navigate the quickfix list for example&lt;a href="#fnref1" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn2" role="doc-endnote"&gt;&lt;p&gt;&lt;code&gt;:help recording&lt;/code&gt;&lt;a href="#fnref2" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn3" role="doc-endnote"&gt;&lt;p&gt;When I’m recording a macro, I prefer starting out by storing it in register &lt;code&gt;q&lt;/code&gt;, and then copying it over to another register if it works as intended. I think of &lt;code&gt;qq&lt;/code&gt; as ‘quick record’.&lt;a href="#fnref3" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;li id="fn4" role="doc-endnote"&gt;&lt;p&gt;&lt;code&gt;:help mark-motions&lt;/code&gt;&lt;a href="#fnref4" class="footnote-back" role="doc-backlink"&gt;↩︎&lt;/a&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/section&gt;</description>
+<link>https://peppe.rs/posts/rapid_refactoring_with_vim/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/rapid_refactoring_with_vim/</guid>
+</item>
+<item>
+<title>ustatic usites uwith ubash</title>
+<description>&lt;p&gt;After going through a bunch of static site generators (&lt;a href="https://blog.getpelican.com/"&gt;pelican&lt;/a&gt;, &lt;a href="https://gohugo.io"&gt;hugo&lt;/a&gt;, &lt;a href="https://github.com/icyphox/vite"&gt;vite&lt;/a&gt;), I decided to roll my own. If you are more of the ‘show me the code’ kinda guy, &lt;a href="https://github.com/nerdypepper/site"&gt;here&lt;/a&gt; you go.&lt;/p&gt;
+&lt;h3 id="text-formatting"&gt;Text formatting&lt;/h3&gt;
+&lt;p&gt;I chose to write in markdown, and convert to html with &lt;a href="https://kristaps.bsd.lv/lowdown/"&gt;lowdown&lt;/a&gt;.&lt;/p&gt;
+&lt;h3 id="directory-structure"&gt;Directory structure&lt;/h3&gt;
+&lt;p&gt;I host my site on GitHub pages, so &lt;code&gt;docs/&lt;/code&gt; has to be the entry point. Markdown formatted posts go into &lt;code&gt;posts/&lt;/code&gt;, get converted into html, and end up in &lt;code&gt;docs/index.html&lt;/code&gt;, something like this:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb1"&gt;&lt;pre class="sourceCode bash"&gt;&lt;code class="sourceCode bash"&gt;&lt;span id="cb1-1"&gt;&lt;a href="#cb1-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="va"&gt;posts=$(&lt;/span&gt;&lt;span class="fu"&gt;ls&lt;/span&gt; -t ./posts&lt;span class="va"&gt;)&lt;/span&gt;     # &lt;span class="ex"&gt;chronological&lt;/span&gt; order!&lt;/span&gt;
+&lt;span id="cb1-2"&gt;&lt;a href="#cb1-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;for&lt;/span&gt; &lt;span class="ex"&gt;f&lt;/span&gt; in &lt;span class="va"&gt;$posts&lt;/span&gt;&lt;span class="kw"&gt;;&lt;/span&gt; &lt;span class="kw"&gt;do&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-3"&gt;&lt;a href="#cb1-3" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="va"&gt;file=&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;./posts/&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;$f&lt;/span&gt;      # &lt;span class="kw"&gt;`&lt;/span&gt;&lt;span class="fu"&gt;ls&lt;/span&gt;&lt;span class="kw"&gt;`&lt;/span&gt; &lt;span class="ex"&gt;mangled&lt;/span&gt; our file paths&lt;/span&gt;
+&lt;span id="cb1-4"&gt;&lt;a href="#cb1-4" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="bu"&gt;echo&lt;/span&gt; &lt;span class="st"&gt;&amp;quot;generating post &lt;/span&gt;&lt;span class="va"&gt;$file&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-5"&gt;&lt;a href="#cb1-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb1-6"&gt;&lt;a href="#cb1-6" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="va"&gt;html=$(&lt;/span&gt;&lt;span class="ex"&gt;lowdown&lt;/span&gt; &lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;$file&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;)&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb1-7"&gt;&lt;a href="#cb1-7" aria-hidden="true"&gt;&lt;/a&gt;    &lt;span class="bu"&gt;echo&lt;/span&gt; -e &lt;span class="st"&gt;&amp;quot;html&amp;quot;&lt;/span&gt; &lt;span class="op"&gt;&amp;gt;&amp;gt;&lt;/span&gt; docs/index.html&lt;/span&gt;
+&lt;span id="cb1-8"&gt;&lt;a href="#cb1-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="kw"&gt;done&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3 id="assets"&gt;Assets&lt;/h3&gt;
+&lt;p&gt;Most static site generators recommend dropping image assets into the site source itself. That does have it’s merits, but I prefer hosting images separately:&lt;/p&gt;
+&lt;div class="sourceCode" id="cb2"&gt;&lt;pre class="sourceCode bash"&gt;&lt;code class="sourceCode bash"&gt;&lt;span id="cb2-1"&gt;&lt;a href="#cb2-1" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;# strip file extension&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-2"&gt;&lt;a href="#cb2-2" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="va"&gt;ext=&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;${1##&lt;/span&gt;*.&lt;span class="va"&gt;}&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-3"&gt;&lt;a href="#cb2-3" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb2-4"&gt;&lt;a href="#cb2-4" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;# generate a random file name&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-5"&gt;&lt;a href="#cb2-5" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="va"&gt;id=$(&lt;/span&gt; &lt;span class="fu"&gt;cat&lt;/span&gt; /dev/urandom &lt;span class="kw"&gt;|&lt;/span&gt; &lt;span class="fu"&gt;tr&lt;/span&gt; -dc &lt;span class="st"&gt;&amp;#39;a-zA-Z0-9&amp;#39;&lt;/span&gt; &lt;span class="kw"&gt;|&lt;/span&gt; &lt;span class="ex"&gt;fold&lt;/span&gt; -w 2 &lt;span class="kw"&gt;|&lt;/span&gt; &lt;span class="fu"&gt;head&lt;/span&gt; -n 1 &lt;span class="va"&gt;)&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-6"&gt;&lt;a href="#cb2-6" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="va"&gt;id=&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;$id&lt;/span&gt;&lt;span class="st"&gt;.&lt;/span&gt;&lt;span class="va"&gt;$ext&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-7"&gt;&lt;a href="#cb2-7" aria-hidden="true"&gt;&lt;/a&gt;&lt;/span&gt;
+&lt;span id="cb2-8"&gt;&lt;a href="#cb2-8" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="co"&gt;# copy to my file host&lt;/span&gt;&lt;/span&gt;
+&lt;span id="cb2-9"&gt;&lt;a href="#cb2-9" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="fu"&gt;scp&lt;/span&gt; -P 443 &lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;$1&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt; emerald:files/&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;span class="va"&gt;$id&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt; &lt;/span&gt;
+&lt;span id="cb2-10"&gt;&lt;a href="#cb2-10" aria-hidden="true"&gt;&lt;/a&gt;&lt;span class="bu"&gt;echo&lt;/span&gt; &lt;span class="st"&gt;&amp;quot;https://u.peppe.rs/&lt;/span&gt;&lt;span class="va"&gt;$id&lt;/span&gt;&lt;span class="st"&gt;&amp;quot;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3 id="templating"&gt;Templating&lt;/h3&gt;
+&lt;p&gt;&lt;a href="https://github.com/NerdyPepper/site/blob/master/generate.sh"&gt;&lt;code&gt;generate.sh&lt;/code&gt;&lt;/a&gt; brings the above bits and pieces together (with some extra cruft to avoid javascript). It uses &lt;code&gt;sed&lt;/code&gt; to produce nice titles from the file names (removes underscores, title-case), and &lt;code&gt;date(1)&lt;/code&gt; to add the date to each post listing!&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/static_sites_with_bash/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/static_sites_with_bash/</guid>
+</item>
+<item>
+<title>utermux utandem</title>
+<description>&lt;p&gt;I learnt about &lt;code&gt;termux&lt;/code&gt; from a friend on IRC recently. It looked super gimmicky to me at first, but it eventually proved to be useful. Here’s what I use it for:&lt;/p&gt;
+&lt;h3 id="rsync"&gt;rsync&lt;/h3&gt;
+&lt;p&gt;Ever since I degoogled my android device, syncing files between my phone and my PC has always been a pain. I’m looking at you MTP. But, with &lt;code&gt;termux&lt;/code&gt; and &lt;code&gt;sshd&lt;/code&gt; all set up, it’s as simple as:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;$ arp
+Address         HWtype  HWad ...
+192.168.43.187  ether   d0:0 ...
+
+$ rsync -avz 192.168.43.187:~/frogs ~/pics/frogs&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="ssh-tmux"&gt;ssh &amp;amp; tmux&lt;/h3&gt;
+&lt;p&gt;My phone doubles as a secondary view into my main machine with &lt;code&gt;ssh&lt;/code&gt; and &lt;code&gt;tmux&lt;/code&gt;. When I am away from my PC (read: sitting across the room), I check build status and IRC messages by &lt;code&gt;ssh&lt;/code&gt;ing into a tmux session running the said build or weechat.&lt;/p&gt;
+&lt;h3 id="file-uploads"&gt;file uploads&lt;/h3&gt;
+&lt;p&gt;Not being able to access my (ssh-only) file host was crippling. With a &lt;code&gt;bash&lt;/code&gt; instance on my phone, I just copied over my ssh keys, and popped in a file upload script (a glorified &lt;code&gt;scp&lt;/code&gt;). Now I just have to figure out a way to clean up these file names …&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;~/storage/pictures/ $ ls
+02muf5g7b2i41.jpg  7alt3cwg77841.jpg  cl4bsrge7id11.png
+mtZabXG.jpg        p8d5c584f2841.jpg  vjUxGjq.jpg&lt;/code&gt;&lt;/pre&gt;
+&lt;h3 id="cmus"&gt;cmus&lt;/h3&gt;
+&lt;p&gt;Alright, I don’t really listen to music via &lt;code&gt;cmus&lt;/code&gt;, but I did use it a couple times when my default music player was acting up. &lt;code&gt;cmus&lt;/code&gt; is a viable option:&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://u.peppe.rs/CP.jpg"&gt;&lt;img src="https://u.peppe.rs/CP.jpg" /&gt;&lt;/a&gt;&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/termux_tandem/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/termux_tandem/</guid>
+</item>
+<item>
+<title>uturing ucomplete utype usystems</title>
+<description>&lt;p&gt;Rust’s type system is Turing complete:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/doctorn/trait-eval/"&gt;FizzBuzz with Rust Traits&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://github.com/Ashymad/fortraith"&gt;A Forth implementation with Rust Traits&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;It is impossible to determine if a program written in a generally Turing complete system will ever stop. That is, it is impossible to write a program &lt;code&gt;f&lt;/code&gt; that determines if a program &lt;code&gt;g&lt;/code&gt;, where &lt;code&gt;g&lt;/code&gt; is written in a Turing complete programming language, will ever halt. The &lt;a href="https://en.wikipedia.org/wiki/Halting_problem"&gt;Halting Problem&lt;/a&gt; is in fact, an &lt;a href="https://en.wikipedia.org/wiki/Undecidable_problem"&gt;undecidable problem&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;How is any of this relevant?&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;Rust performs compile-time type inference. The type checker, in turn, compiles and infers types, I would describe it as a compiler inside a compiler. It is possible that &lt;code&gt;rustc&lt;/code&gt; may never finish compiling your Rust program! I lied, &lt;code&gt;rustc&lt;/code&gt; stops after a while, after hitting the recursion limit.&lt;/p&gt;
+&lt;p&gt;I understand that this post lacks content.&lt;/p&gt;</description>
+<link>https://peppe.rs/posts/turing_complete_type_systems/</link>
+<pubDate>Sat, 08 Aug 2020 14:34:00 +0000</pubDate>
+<guid>https://peppe.rs/posts/turing_complete_type_systems/</guid>
+</item>
+
+
+    </channel>
+</rss>
