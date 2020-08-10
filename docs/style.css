@@ -59,7 +59,7 @@ body { font-family: 'Inter', sans-serif; }
 }
 
 body {
-  background-color: var(--white);
+  background-color: #101010;
   color: var(--black);
   padding: 0;
   padding-top: 2rem;
@@ -89,7 +89,7 @@ h4 {
 
 h1, h2, h3 {
   margin: 0;
-  margin-top: 3rem;
+  margin-top: 1rem;
 }
 h4, h5, h6 {
   margin: 0;
@@ -214,7 +214,7 @@ hr {
   padding: 1.3rem;
   padding-right: 0.6rem;
   border: 2px solid var(--dark-white);
-  border-radius: 0.4rem;
+  border-radius: 1.5rem;
   margin: 2rem -1.3rem;
   font-family: 'Inter', sans-serif;
 }
@@ -223,7 +223,7 @@ hr {
   margin: 0 auto;
   color: var(--black);
   text-align: center;
-  font-size: 6rem;
+  font-size: 10rem;
   text-shadow: 0.25rem 0rem var(--pink), -0.25rem 0rem var(--cyan);
   line-height: 5rem;
   font-weight: 800;
