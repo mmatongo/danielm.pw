@@ -9,7 +9,7 @@ div.hot-links {
 
 .feed-button, .donate-button {
   background-color: var(--dark-white);
-  border-radius: 1.2rem;
+  border-radius: 0.7rem;
   border: 0px solid var(--dark-white);
   color: var(--black) !important;
   font-size: 0.8rem;
