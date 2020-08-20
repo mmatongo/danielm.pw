@@ -1,4 +1,4 @@
-### peppe.rs
+### danielm.pw
 
 my technical blog, put together with:
  - bash: string and file manipulation
