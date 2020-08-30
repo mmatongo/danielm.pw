@@ -239,7 +239,7 @@ hr {
 
 a, a:hover, a:visited, a:active {
   transition: ease 0.2s;
-  color: var(--light-black);
+  color: var(--cyan);
 }
 
 .post-link, .post-link:hover, .post-link:visited, .post-link:active {
