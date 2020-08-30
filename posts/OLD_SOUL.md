@@ -12,7 +12,7 @@ I know that I love the sensational music of [Nat King Cole](https://en.wikipedia
 
 That I find the writings of [Khalil Gribran](https://www.poetryfoundation.org/poets/kahlil-gibran) alluring and that my favourite piece by him [On Love](https://poets.org/poem/love-8) still moves me so long after I first read it.
 
-And how one of my all-time favourite shows [How I Met Your Mother](https://www.netflix.com/watch/80010337?source=35) hasn't been on the air in 6 years yet I still watch it at least 3 times a year just so I can complain about anending I've seen so many times before.
+And how one of my all-time favourite shows [How I Met Your Mother](https://www.netflix.com/watch/80010337?source=35) hasn't been on the air in 6 years yet I still watch it at least 3 times a year just so I can complain about an ending I've seen so many times before.
 
 And although these examples might not suffice to some, I hope they get my point across. That I love the old things, the aged like wine old things, the things not many remember or consider. 
 
