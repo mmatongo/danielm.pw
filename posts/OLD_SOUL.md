@@ -5,6 +5,7 @@
 >― Nikita Gill
 
 I am an old soul.
+
 I've never really been able to explain why I love the antique things of life, I just know that I do and that I love the things that I love.
 
 I know that I love the sensational music of [Nat King Cole](https://en.wikipedia.org/wiki/Nat_King_Cole) and that my favourite song by him is [L-O-V-E](https://www.youtube.com/watch?v=f_HmF84G7ZY).
